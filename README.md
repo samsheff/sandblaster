@@ -18,6 +18,40 @@ Current status:
 
 Reference code architecture and migration intent are tracked in the conversation plan that drove this workspace layout.
 
+## Running on real x86_64 Linux
+
+On an actual x86_64 Linux system, use the native runner:
+
+```sh
+scripts/x86-linux.sh check
+scripts/x86-linux.sh build
+scripts/x86-linux.sh test
+```
+
+Start the Linux/x86 backend without executing generated probes:
+
+```sh
+scripts/x86-linux.sh smoke
+```
+
+Run a bounded generated-code probe:
+
+```sh
+scripts/x86-linux.sh exec-smoke
+```
+
+Run the injector or sifter directly by passing the remaining arguments through:
+
+```sh
+scripts/x86-linux.sh injector -T -b -B 1 -i 90 -e 91
+scripts/x86-linux.sh sifter --unk --dis --len --sync --tick -- -P1 -t
+```
+
+The runner intentionally refuses to run unless `uname` reports Linux on
+`x86_64`/`amd64`. The smoke commands avoid `-0` null-page mode and do not need
+root; scans that use `-0` still need the same privileges as the reference
+sandsifter injector.
+
 ## Testing x86 Linux from macOS/arm
 
 The injector backend is written for `linux + x86_64`. On Apple Silicon macOS,
