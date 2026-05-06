@@ -1,6 +1,9 @@
 # Sandblaster
 
-This repository is the Rust rewrite workspace for Sandsifter. The reference implementation remains in [`reference/`](reference/) and is currently the source of truth for behavior and compatibility.
+Sandblaster is a processor fuzzer for discovering unusual instruction behavior
+on real x86_64 CPUs. It generates, executes, disassembles, and records processor
+test cases through a Rust workspace built for local scans and repeatable
+automation.
 
 The current implementation provides:
 
@@ -16,10 +19,8 @@ Current status:
 - `cargo test --workspace` validates the shared compatibility layer
 - `injector` emits legacy-compatible 44-byte raw packets
 - `disas_known` and `disas_length` are populated by a real x86_64 decoder
-- `sifter` records reference-style findings in `data/log` and `data/sync`
+- `sifter` records findings in `data/log` and `data/sync`
 - the native low-level execution backend is implemented for real `x86_64` Linux
-
-Reference code architecture and migration intent are tracked in the conversation plan that drove this workspace layout.
 
 ## Running on real x86_64 Linux
 
@@ -97,8 +98,7 @@ unknown.
 
 The runner intentionally refuses to run unless `uname` reports Linux on
 `x86_64`/`amd64`. The smoke commands avoid `-0` null-page mode and do not need
-root; scans that use `-0` still need the same privileges as the reference
-sandsifter injector.
+root; scans that use `-0` still need low-level execution privileges.
 
 ## Testing x86 Linux from macOS/arm
 
