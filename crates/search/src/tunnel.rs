@@ -172,6 +172,21 @@ mod tests {
     }
 
     #[test]
+    fn tunnel_backs_out_to_fault_length_for_unknown_sigill() {
+        let mut strategy = strategy_at(&[0x62, 0x08, 0x16, 0xbd, 0x00], 4);
+        strategy.observe(crate::StrategyFeedback {
+            observed_length: 2,
+            signum: 4,
+            disasm_length: 0,
+            disasm_known: false,
+        });
+        assert_eq!(
+            strategy.next_candidate(),
+            Some(InstructionBytes::from_slice(&[0x62, 0x09]))
+        );
+    }
+
+    #[test]
     fn tunnel_descends_through_prefix_and_escape_bytes() {
         let mut prefix_strategy = strategy_at(&[0x66], 0);
         prefix_strategy.observe(crate::StrategyFeedback {
@@ -258,7 +273,8 @@ impl SearchStrategy for TunnelStrategy {
         }
 
         if feedback.is_unknown_invalid() && self.index > 0 {
-            self.index -= 1;
+            let fault_index = feedback.observed_length.saturating_sub(1) as usize;
+            self.index = fault_index.min(self.index - 1);
             self.zero_tail_after_index();
             self.last_length = None;
             return;
