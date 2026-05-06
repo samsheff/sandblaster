@@ -57,6 +57,27 @@ mod tests {
         );
         assert_eq!(strategy.next_candidate(), None);
     }
+
+    #[test]
+    fn tunnel_descends_when_observed_length_changes() {
+        let range = SearchRange {
+            start: InstructionBytes::from_slice(&[]),
+            end: InstructionBytes::from_slice(&[0x01]),
+        };
+        let mut strategy = TunnelStrategy::with_range(range);
+        assert_eq!(
+            strategy.next_candidate(),
+            Some(InstructionBytes::from_slice(&[0x00]))
+        );
+        strategy.observe(crate::StrategyFeedback {
+            observed_length: 2,
+            signum: 5,
+        });
+        assert_eq!(
+            strategy.next_candidate(),
+            Some(InstructionBytes::from_slice(&[0x00, 0x01]))
+        );
+    }
 }
 
 impl Default for TunnelStrategy {

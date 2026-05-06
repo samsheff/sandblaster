@@ -37,13 +37,36 @@ where
     E: ExecutionBackend,
 {
     pub fn new(disasm: D, backend: E, config: &InjectorConfig) -> Self {
+        Self::new_with_strategy(disasm, backend, config, None)
+    }
+
+    pub fn new_with_driven_candidates(
+        disasm: D,
+        backend: E,
+        config: &InjectorConfig,
+        candidates: VecDeque<InstructionBytes>,
+    ) -> Self {
+        Self::new_with_strategy(
+            disasm,
+            backend,
+            config,
+            Some(Box::new(DrivenStrategy::new(candidates))),
+        )
+    }
+
+    fn new_with_strategy(
+        disasm: D,
+        backend: E,
+        config: &InjectorConfig,
+        strategy: Option<Box<dyn SearchStrategy>>,
+    ) -> Self {
         let range = SearchRange {
             start: config.start_instruction.unwrap_or_default(),
             end: config
                 .end_instruction
                 .unwrap_or_else(|| InstructionBytes::new([0xff; 16], 15)),
         };
-        let strategy = strategy_from_config(config, range);
+        let strategy = strategy.unwrap_or_else(|| strategy_from_config(config, range));
         Self {
             disasm,
             backend,

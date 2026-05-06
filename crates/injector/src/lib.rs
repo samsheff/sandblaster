@@ -2,6 +2,7 @@ mod engine;
 mod linux_x86;
 mod packet;
 mod policy;
+mod range;
 
 use std::fmt;
 
@@ -10,9 +11,10 @@ use sandblaster_disasm::DisasmBackend;
 use sandblaster_search::SearchMode;
 
 pub use engine::{ExecutionBackend, InjectorEngine, InjectorEvent};
-pub use linux_x86::LinuxX86Backend;
+pub use linux_x86::{apply_cpu_affinity, LinuxX86Backend};
 pub use packet::{RawInjectorPacket, TextReport};
 pub use policy::{default_opcode_blacklist, default_prefix_blacklist, PrefixPolicy};
+pub use range::split_search_range;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputMode {
@@ -38,6 +40,7 @@ pub struct InjectorConfig {
     pub jobs: usize,
     pub range_bytes: usize,
     pub dry_run: bool,
+    pub worker: bool,
 }
 
 impl Default for InjectorConfig {
@@ -59,6 +62,7 @@ impl Default for InjectorConfig {
             jobs: 1,
             range_bytes: 0,
             dry_run: false,
+            worker: false,
         }
     }
 }
@@ -100,6 +104,7 @@ impl InjectorConfig {
                 "-D" => config.allow_duplicate_prefixes = true,
                 "-N" => config.nx_support = false,
                 "--dry-run" => config.dry_run = true,
+                "--worker" => config.worker = true,
                 "-s" => {
                     index += 1;
                     config.seed = Some(parse_number(next_arg(args, index, "-s")?, "-s")?);

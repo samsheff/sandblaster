@@ -19,8 +19,11 @@ Current status:
 - `cargo test --workspace` validates the shared compatibility layer
 - `injector` emits legacy-compatible 44-byte raw packets
 - `disas_known` and `disas_length` are populated by a real x86_64 decoder
-- `sifter` records findings in `data/log` and `data/sync`
+- `sifter` records legacy findings in `data/log` and `data/sync`, plus additive
+  `data/findings.tsv` and `data/summary` metadata
 - the native low-level execution backend is implemented for real `x86_64` Linux
+- `injector -j` supervises multiple worker processes for finite brute/tunnel
+  ranges, with `-l` controlling the split width
 
 ## Running on real x86_64 Linux
 
@@ -69,6 +72,36 @@ SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
 scripts/x86-linux.sh sifter --unk --dis --len --sync --tick --save -- -b -B 1 -i 00 -e ff
 ```
 
+Resume a saved run. `--save` updates `data/last` as packets arrive, and
+`--resume` appends that value as the injector start instruction:
+
+```sh
+SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
+scripts/x86-linux.sh sifter --unk --dis --len --sync --tick --save --resume -- -b -B 1 -e ff
+```
+
+When passed directly to `injector`, `-x` emits periodic progress ticks to
+stderr. Through `sifter`, `--tick` writes the latest raw instruction bytes to
+`data/tick`.
+
+Run a bounded scan with multiple worker processes. Parallel workers are
+supported for finite brute and tunnel ranges; random and driven modes should use
+`-j 1`. If `-j` is greater than one and `-l` is omitted, the injector splits on
+one leading byte:
+
+```sh
+scripts/x86-linux.sh injector -T -b -B 1 -i 00 -e ff -j 4 -l 1
+
+SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
+scripts/x86-linux.sh sifter --no-ui --unk --sync --save -- -b -B 1 -i 00 -e ff -j 4 -l 1
+```
+
+Pin injector workers to a CPU with `-c`:
+
+```sh
+scripts/x86-linux.sh injector -T -c 0 -b -B 1 -i 90 -e 91
+```
+
 Run a full tunnel scan:
 
 ```sh
@@ -98,7 +131,20 @@ unknown.
 
 The runner intentionally refuses to run unless `uname` reports Linux on
 `x86_64`/`amd64`. The smoke commands avoid `-0` null-page mode and do not need
-root; scans that use `-0` still need low-level execution privileges.
+root; scans that use `-0` still need root and a kernel configuration that allows
+mapping page zero. If `-0` fails, the injector exits with the underlying mmap
+error rather than silently continuing without null-page access.
+
+`data/log` and `data/sync` keep the reference-compatible legacy text record
+shape. `data/findings.tsv` adds reproducible command metadata and raw fields for
+each deduplicated finding, while `data/summary` groups findings by opcode,
+leading prefix, signal, and disassembler class.
+
+The Rust disassembler is `iced-x86`; the reference used Capstone. The raw packet
+contract only records `disas_known` and `disas_length`, so mnemonic and operand
+formatting differences are intentionally not part of compatibility. If a bounded
+Capstone comparison is added locally, expected differences should be documented
+rather than hidden by changing raw packet layout.
 
 ## Testing x86 Linux from macOS/arm
 

@@ -17,6 +17,9 @@ const DATA_DIR: &str = "data";
 const LOG_PATH: &str = "data/log";
 const SYNC_PATH: &str = "data/sync";
 const LAST_PATH: &str = "data/last";
+const TICK_PATH: &str = "data/tick";
+const FINDINGS_PATH: &str = "data/findings.tsv";
+const SUMMARY_PATH: &str = "data/summary";
 const INSTRUCTION_LOG_LEN: usize = 20;
 const ARTIFACT_LOG_LEN: usize = 10;
 const UI_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
@@ -261,7 +264,17 @@ fn run(config: CliConfig) -> Result<(), String> {
                 let result = RawInjectorPacket::from_bytes(raw).into_execution_result();
                 stats.tested += 1;
                 stats.last_result = Some(result.clone());
-                push_bounded(&mut stats.recent_results, result.clone(), INSTRUCTION_LOG_LEN);
+                if config.tick {
+                    write_tick(&result)?;
+                }
+                if config.save {
+                    write_last_result(&result)?;
+                }
+                push_bounded(
+                    &mut stats.recent_results,
+                    result.clone(),
+                    INSTRUCTION_LOG_LEN,
+                );
                 if config.filters.detect(&result).is_some() {
                     record_artifact(&mut stats, result, config.low_mem, sync_file.as_mut())?;
                     live.maybe_draw(&stats, true).map_err(write_error)?;
@@ -282,6 +295,8 @@ fn run(config: CliConfig) -> Result<(), String> {
     }
 
     write_final_log(&stats, &command_line, &injector_command)?;
+    write_findings(&stats, &command_line, &injector_command)?;
+    write_summary(&stats)?;
     live.maybe_draw(&stats, true).map_err(write_error)?;
     if config.save {
         write_last(&stats)?;
@@ -464,10 +479,103 @@ fn write_last(stats: &ScanStats) -> Result<(), String> {
     let Some(result) = &stats.last_result else {
         return Ok(());
     };
+    write_last_result(result)
+}
+
+fn write_last_result(result: &ExecutionResult) -> Result<(), String> {
     let text = sandblaster_core::format_full_hex(
         &result.instruction.bytes()[..result.length.min(RAW_REPORT_INSN_BYTES as u32) as usize],
     );
     fs::write(LAST_PATH, text).map_err(|error| format!("failed to write {LAST_PATH}: {error}"))
+}
+
+fn write_tick(result: &ExecutionResult) -> Result<(), String> {
+    let text = sandblaster_core::format_full_hex(result.instruction.bytes());
+    fs::write(TICK_PATH, text).map_err(|error| format!("failed to write {TICK_PATH}: {error}"))
+}
+
+fn write_findings(
+    stats: &ScanStats,
+    command_line: &str,
+    injector_command: &str,
+) -> Result<(), String> {
+    let mut out = String::new();
+    out.push_str("# command\t");
+    out.push_str(command_line);
+    out.push('\n');
+    out.push_str("# injector\t");
+    out.push_str(injector_command);
+    out.push('\n');
+    out.push_str("executed_hex\traw_hex\tvalid\tlength\tsignum\tsi_code\tfault_addr\tdisas_known\tdisas_length\n");
+    for result in stats.artifacts.values() {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\n",
+            result.executed_key_hex(),
+            result.raw_payload_hex(),
+            result.valid,
+            result.length,
+            result.signum,
+            result.si_code,
+            result.fault_addr,
+            u8::from(result.disasm.known),
+            result.disasm.length
+        ));
+    }
+    fs::write(FINDINGS_PATH, out)
+        .map_err(|error| format!("failed to write {FINDINGS_PATH}: {error}"))
+}
+
+fn write_summary(stats: &ScanStats) -> Result<(), String> {
+    let mut groups: BTreeMap<String, u64> = BTreeMap::new();
+    for result in stats.artifacts.values() {
+        let executed = result.instruction.executed_prefix(result.length as usize);
+        let opcode = first_opcode_byte(executed);
+        let prefix = first_prefix_byte(executed);
+        let disasm_class = if result.disasm.known {
+            "known"
+        } else {
+            "unknown"
+        };
+        let key = format!(
+            "opcode={opcode} prefix={prefix} signal={} disasm={disasm_class}",
+            result.signum
+        );
+        *groups.entry(key).or_default() += 1;
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("tested\t{}\n", stats.tested));
+    out.push_str(&format!("artifacts\t{}\n", stats.artifacts_found));
+    for (key, count) in groups {
+        out.push_str(&format!("{count}\t{key}\n"));
+    }
+    fs::write(SUMMARY_PATH, out).map_err(|error| format!("failed to write {SUMMARY_PATH}: {error}"))
+}
+
+fn first_opcode_byte(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .copied()
+        .find(|byte| !is_prefix(*byte))
+        .map(|byte| format!("{byte:02x}"))
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn first_prefix_byte(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .copied()
+        .take_while(|byte| is_prefix(*byte))
+        .next()
+        .map(|byte| format!("{byte:02x}"))
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn is_prefix(byte: u8) -> bool {
+    matches!(
+        byte,
+        0xf0 | 0xf2 | 0xf3 | 0x2e | 0x36 | 0x3e | 0x26 | 0x64 | 0x65 | 0x66 | 0x67 | 0x40..=0x4f
+    )
 }
 
 fn write_error(error: io::Error) -> String {

@@ -95,6 +95,32 @@ pub struct LinuxRuntimeEnvironment {
     pub capabilities: Option<CpuCapabilities>,
 }
 
+#[cfg(target_os = "linux")]
+pub fn apply_cpu_affinity(core: usize) -> io::Result<()> {
+    // SAFETY: `cpu_set_t` is immediately initialized by CPU_ZERO.
+    let mut set: libc::cpu_set_t = unsafe { mem::zeroed() };
+    unsafe {
+        libc::CPU_ZERO(&mut set);
+        libc::CPU_SET(core, &mut set);
+    }
+    // SAFETY: the set pointer is valid for the duration of the syscall.
+    let result = unsafe { libc::sched_setaffinity(0, mem::size_of::<libc::cpu_set_t>(), &set) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn apply_cpu_affinity(core: usize) -> io::Result<()> {
+    let _ = core;
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "CPU affinity is only implemented on Linux",
+    ))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FaultModel {
     pub max_instruction_length: usize,
