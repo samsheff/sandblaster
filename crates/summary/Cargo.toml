@@ -1,0 +1,12 @@
+[package]
+name = "sandblaster-summary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sandblaster-core = { path = "../core" }
+
+[lib]
+name = "sandblaster_summary"
+path = "src/lib.rs"

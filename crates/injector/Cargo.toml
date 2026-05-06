@@ -1,0 +1,19 @@
+[package]
+name = "sandblaster-injector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libc = "0.2"
+sandblaster-core = { path = "../core" }
+sandblaster-disasm = { path = "../disasm" }
+sandblaster-search = { path = "../search" }
+
+[lib]
+name = "sandblaster_injector"
+path = "src/lib.rs"
+
+[[bin]]
+name = "injector"
+path = "src/main.rs"
