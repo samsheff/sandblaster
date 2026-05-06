@@ -798,9 +798,11 @@ fn page_size() -> io::Result<usize> {
 
 #[cfg(test)]
 mod tests {
+    use sandblaster_core::MAX_INSN_LENGTH;
+
     use crate::linux_x86::{
         normalize_fault_addr, FaultModel, FaultObservation, LinuxRuntimeEnvironment, ProbeContext,
-        TrapFlagPreamble, JMP_LENGTH, TF, UD2_SIZE,
+        TrapFlagPreamble, DEFAULT_ALTSTACK_SIZE, JMP_LENGTH, TF, UD2_SIZE,
     };
 
     #[test]
@@ -904,7 +906,7 @@ mod tests {
             ExecutableRegion::allocate(environment.page_size, true).expect("mapping should work");
         let instruction = InstructionBytes::from_slice(&[0x90, 0xcc]);
         region.load_instruction(&instruction);
-        let packet_start = region.packet_start(instruction.specified_len());
+        let packet_start = region.packet_start(instruction.specified_len().max(MAX_INSN_LENGTH));
         // SAFETY: `packet_start` points to bytes we just copied into the code page.
         let loaded =
             unsafe { std::slice::from_raw_parts(packet_start, instruction.specified_len()) };
