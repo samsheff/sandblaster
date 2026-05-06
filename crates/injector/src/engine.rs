@@ -115,6 +115,8 @@ where
         self.strategy.observe(StrategyFeedback {
             observed_length: observation.length,
             signum: observation.signum,
+            disasm_length: disasm.length,
+            disasm_known: disasm.known,
         });
         Ok(Some(InjectorEvent::Executed(
             observation.into_execution_result(instruction, disasm),

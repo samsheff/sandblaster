@@ -27,6 +27,14 @@ impl Default for SearchRange {
 pub struct StrategyFeedback {
     pub observed_length: u32,
     pub signum: u32,
+    pub disasm_length: u32,
+    pub disasm_known: bool,
+}
+
+impl StrategyFeedback {
+    pub fn is_known_length_match(self) -> bool {
+        self.disasm_known && self.disasm_length == self.observed_length
+    }
 }
 
 pub trait SearchStrategy {

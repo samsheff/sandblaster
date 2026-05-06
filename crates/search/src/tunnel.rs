@@ -36,6 +36,12 @@ impl TunnelStrategy {
             None
         }
     }
+
+    fn zero_tail_after_index(&mut self) {
+        for byte in self.bytes.iter_mut().skip(self.index + 1) {
+            *byte = 0;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -72,10 +78,35 @@ mod tests {
         strategy.observe(crate::StrategyFeedback {
             observed_length: 2,
             signum: 5,
+            disasm_length: 0,
+            disasm_known: false,
         });
         assert_eq!(
             strategy.next_candidate(),
             Some(InstructionBytes::from_slice(&[0x00, 0x01]))
+        );
+    }
+
+    #[test]
+    fn tunnel_does_not_descend_into_known_matching_operands() {
+        let range = SearchRange {
+            start: InstructionBytes::from_slice(&[0x00, 0x14]),
+            end: InstructionBytes::from_slice(&[0x00, 0x16]),
+        };
+        let mut strategy = TunnelStrategy::with_range(range);
+        assert_eq!(
+            strategy.next_candidate(),
+            Some(InstructionBytes::from_slice(&[0x00, 0x14, 0x00]))
+        );
+        strategy.observe(crate::StrategyFeedback {
+            observed_length: 6,
+            signum: 5,
+            disasm_length: 6,
+            disasm_known: true,
+        });
+        assert_eq!(
+            strategy.next_candidate(),
+            Some(InstructionBytes::from_slice(&[0x00, 0x15]))
         );
     }
 }
@@ -119,7 +150,18 @@ impl SearchStrategy for TunnelStrategy {
     }
 
     fn observe(&mut self, feedback: StrategyFeedback) {
-        if self.index + 1 < RAW_REPORT_INSN_BYTES
+        if feedback.is_known_length_match()
+            && self.index > 1
+            && self.index + 1 < feedback.observed_length as usize
+        {
+            self.index -= 1;
+            self.zero_tail_after_index();
+            self.last_length = None;
+            return;
+        }
+
+        if !feedback.is_known_length_match()
+            && self.index + 1 < RAW_REPORT_INSN_BYTES
             && self.last_length != Some(feedback.observed_length)
             && self.index + 1 < feedback.observed_length as usize
         {
