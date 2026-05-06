@@ -109,6 +109,29 @@ mod tests {
             Some(InstructionBytes::from_slice(&[0x00, 0x15]))
         );
     }
+
+    #[test]
+    fn tunnel_backs_out_of_unknown_sigill_space() {
+        let range = SearchRange {
+            start: InstructionBytes::from_slice(&[0x82, 0x04]),
+            end: InstructionBytes::from_slice(&[0x82, 0x06]),
+        };
+        let mut strategy = TunnelStrategy::with_range(range);
+        assert_eq!(
+            strategy.next_candidate(),
+            Some(InstructionBytes::from_slice(&[0x82, 0x04, 0x00]))
+        );
+        strategy.observe(crate::StrategyFeedback {
+            observed_length: 8,
+            signum: 4,
+            disasm_length: 0,
+            disasm_known: false,
+        });
+        assert_eq!(
+            strategy.next_candidate(),
+            Some(InstructionBytes::from_slice(&[0x82, 0x05]))
+        );
+    }
 }
 
 impl Default for TunnelStrategy {
@@ -150,6 +173,13 @@ impl SearchStrategy for TunnelStrategy {
     }
 
     fn observe(&mut self, feedback: StrategyFeedback) {
+        if feedback.is_unknown_invalid() && self.index > 0 {
+            self.index -= 1;
+            self.zero_tail_after_index();
+            self.last_length = None;
+            return;
+        }
+
         if feedback.is_known_length_match()
             && self.index > 1
             && self.index + 1 < feedback.observed_length as usize
@@ -160,7 +190,8 @@ impl SearchStrategy for TunnelStrategy {
             return;
         }
 
-        if !feedback.is_known_length_match()
+        if !feedback.is_unknown_invalid()
+            && !feedback.is_known_length_match()
             && self.index + 1 < RAW_REPORT_INSN_BYTES
             && self.last_length != Some(feedback.observed_length)
             && self.index + 1 < feedback.observed_length as usize

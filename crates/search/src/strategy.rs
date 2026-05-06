@@ -1,5 +1,7 @@
 use sandblaster_core::{InstructionBytes, MAX_INSN_LENGTH};
 
+const SIGILL: u32 = 4;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchMode {
     Brute,
@@ -34,6 +36,10 @@ pub struct StrategyFeedback {
 impl StrategyFeedback {
     pub fn is_known_length_match(self) -> bool {
         self.disasm_known && self.disasm_length == self.observed_length
+    }
+
+    pub fn is_unknown_invalid(self) -> bool {
+        !self.disasm_known && self.signum == SIGILL
     }
 }
 
