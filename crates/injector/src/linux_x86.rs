@@ -78,13 +78,13 @@ static mut PREAMBLE_LENGTH: usize = 0;
 static mut RESUME_IP: usize = 0;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 static mut SIGNAL_MODE: SignalMode = SignalMode::CaptureState;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-static mut HAVE_BASELINE_CONTEXT: bool = false;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SignalMode {
     CaptureState,
+    #[allow(dead_code)]
     ExecuteProbe,
 }
 
@@ -631,7 +631,6 @@ impl ExecutionBackend for LinuxX86Backend {
     fn execute(&mut self, instruction: &InstructionBytes) -> Result<BackendObservation, String> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            self.capture_baseline_context();
             let mut result = BackendObservation::default();
             for probe_length in 1..=self.fault_model.max_instruction_length {
                 self.region.load_probe(instruction, probe_length);
@@ -681,27 +680,14 @@ fn native_or_scaffold_signal_handler() -> RawSignalHandler {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 impl LinuxX86Backend {
-    fn capture_baseline_context(&mut self) {
-        // SAFETY: signal handler mode is process-global and the injector currently runs probes
-        // synchronously in one thread.
-        unsafe {
-            if HAVE_BASELINE_CONTEXT {
-                return;
-            }
-            SIGNAL_MODE = SignalMode::CaptureState;
-            core::arch::asm!("ud2", options(nostack));
-            HAVE_BASELINE_CONTEXT = true;
-        }
-    }
-
     fn run_probe(&mut self, probe: &ProbeContext) -> Result<FaultObservation, String> {
         let stack_top = self.dummy_stack.as_mut_ptr() as usize + self.dummy_stack.len() - 16;
-        // SAFETY: the signal handler restores the original context and resumes at the local
-        // label recorded in `RESUME_IP`.
+        // SAFETY: `jump_to_probe` captures a live context in its own stack frame, then the
+        // signal handler restores that context and resumes at the local label recorded in
+        // `RESUME_IP`.
         unsafe {
             PACKET_START = probe.packet_start;
             PREAMBLE_LENGTH = probe.preamble_length;
-            SIGNAL_MODE = SignalMode::ExecuteProbe;
             let _alarm = ProbeAlarm::arm();
             jump_to_probe(probe.packet_start, stack_top);
             Ok(CURRENT_OBSERVATION)
@@ -736,12 +722,17 @@ impl Drop for ProbeAlarm {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 unsafe fn jump_to_probe(packet: usize, stack_top: usize) {
     let resume_slot = std::ptr::addr_of_mut!(RESUME_IP) as usize;
-    // SAFETY: control intentionally transfers to generated code. Faults are redirected by the
-    // installed signal handler back to label 3.
+    let mode_slot = std::ptr::addr_of_mut!(SIGNAL_MODE) as usize;
+    // SAFETY: control intentionally transfers to generated code. The first UD2 captures a live
+    // context for this stack frame. Later faults are redirected by the installed signal handler
+    // back to label 3.
     unsafe {
         core::arch::asm!(
+            "mov byte ptr [{mode_slot}], 0",
+            "ud2",
             "lea r11, [rip + 3f]",
             "mov [{resume_slot}], r11",
+            "mov byte ptr [{mode_slot}], 1",
             "xor rax, rax",
             "xor rcx, rcx",
             "xor rdx, rdx",
@@ -758,6 +749,7 @@ unsafe fn jump_to_probe(packet: usize, stack_top: usize) {
             "jmp {packet}",
             "3:",
             resume_slot = in(reg) resume_slot,
+            mode_slot = in(reg) mode_slot,
             stack_top = in(reg) stack_top,
             packet = in(reg) packet,
             out("rax") _,
