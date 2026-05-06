@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sandblaster_core::{
     CpuMetadata, ExecutionResult, FilterConfig, LegacyArtifactRecord, LegacyHeader, LegacyLog,
@@ -17,8 +17,11 @@ const DATA_DIR: &str = "data";
 const LOG_PATH: &str = "data/log";
 const SYNC_PATH: &str = "data/sync";
 const LAST_PATH: &str = "data/last";
+const INSTRUCTION_LOG_LEN: usize = 20;
+const ARTIFACT_LOG_LEN: usize = 10;
+const UI_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CliConfig {
     filters: FilterConfig,
     tick: bool,
@@ -26,6 +29,7 @@ struct CliConfig {
     resume: bool,
     sync: bool,
     low_mem: bool,
+    live_ui: bool,
     injector_args: Vec<String>,
 }
 
@@ -47,6 +51,8 @@ struct ScanStats {
     tested: u64,
     artifacts_found: u64,
     last_result: Option<ExecutionResult>,
+    recent_results: VecDeque<ExecutionResult>,
+    recent_artifacts: VecDeque<ExecutionResult>,
     artifacts: BTreeMap<Vec<u8>, ExecutionResult>,
     started: Instant,
 }
@@ -57,6 +63,8 @@ impl ScanStats {
             tested: 0,
             artifacts_found: 0,
             last_result: None,
+            recent_results: VecDeque::with_capacity(INSTRUCTION_LOG_LEN),
+            recent_artifacts: VecDeque::with_capacity(ARTIFACT_LOG_LEN),
             artifacts: BTreeMap::new(),
             started: Instant::now(),
         }
@@ -65,6 +73,130 @@ impl ScanStats {
     fn elapsed_text(&self) -> String {
         let elapsed = self.started.elapsed();
         format!("{}.{:03}s", elapsed.as_secs(), elapsed.subsec_millis())
+    }
+}
+
+impl Default for CliConfig {
+    fn default() -> Self {
+        Self {
+            filters: FilterConfig::default(),
+            tick: false,
+            save: false,
+            resume: false,
+            sync: false,
+            low_mem: false,
+            live_ui: true,
+            injector_args: Vec::new(),
+        }
+    }
+}
+
+struct LiveDisplay {
+    enabled: bool,
+    last_draw: Instant,
+    last_tested: u64,
+    last_rate_at: Instant,
+    rate_per_second: u64,
+}
+
+impl LiveDisplay {
+    fn new(enabled: bool) -> Self {
+        if enabled {
+            print!("\x1b[?25l");
+            let _ = io::stdout().flush();
+        }
+        Self {
+            enabled,
+            last_draw: Instant::now() - UI_REFRESH_INTERVAL,
+            last_tested: 0,
+            last_rate_at: Instant::now(),
+            rate_per_second: 0,
+        }
+    }
+
+    fn maybe_draw(&mut self, stats: &ScanStats, force: bool) -> io::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if !force && self.last_draw.elapsed() < UI_REFRESH_INTERVAL {
+            return Ok(());
+        }
+        self.draw(stats)
+    }
+
+    fn draw(&mut self, stats: &ScanStats) -> io::Result<()> {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_rate_at);
+        if elapsed >= Duration::from_secs(1) {
+            self.rate_per_second =
+                ((stats.tested - self.last_tested) as f64 / elapsed.as_secs_f64()) as u64;
+            self.last_tested = stats.tested;
+            self.last_rate_at = now;
+        }
+        self.last_draw = now;
+
+        let mut out = String::new();
+        out.push_str("\x1b[H\x1b[2J");
+        out.push_str("sandblaster live scan\n");
+        out.push_str("=====================\n\n");
+        out.push_str(&format!(
+            "tested: {:>12}    artifacts: {:>8}    rate: {:>8}/s    elapsed: {}\n",
+            comma(stats.tested),
+            comma(stats.artifacts_found),
+            comma(self.rate_per_second),
+            stats.elapsed_text()
+        ));
+
+        if let Some(result) = &stats.last_result {
+            out.push_str(&format!(
+                "current: v={:<2} len={:<2} sig={:<2} code={:<3} addr={:08x} disas_len={} known={} {}\n",
+                result.valid,
+                result.length,
+                result.signum,
+                result.si_code,
+                result.fault_addr,
+                result.disasm.length,
+                u8::from(result.disasm.known),
+                result_hex(result)
+            ));
+        } else {
+            out.push_str("current: waiting for injector results...\n");
+        }
+
+        out.push_str("\nrecent instructions\n");
+        out.push_str("  v  l  s  c  dis known  bytes\n");
+        for result in stats.recent_results.iter().rev().take(INSTRUCTION_LOG_LEN) {
+            out.push_str(&format_result_row(result));
+            out.push('\n');
+        }
+
+        out.push_str("\nrecent findings\n");
+        if stats.recent_artifacts.is_empty() {
+            out.push_str("  none yet\n");
+        } else {
+            out.push_str("  v  l  s  c  dis known  bytes\n");
+            for result in stats.recent_artifacts.iter().rev().take(ARTIFACT_LOG_LEN) {
+                out.push_str(&format_result_row(result));
+                out.push('\n');
+            }
+        }
+
+        out.push_str("\nPress Ctrl-C to stop. Final log is written to data/log when the injector exits cleanly.\n");
+        print!("{out}");
+        io::stdout().flush()
+    }
+
+    fn finish(&mut self) {
+        if self.enabled {
+            print!("\x1b[?25h");
+            let _ = io::stdout().flush();
+        }
+    }
+}
+
+impl Drop for LiveDisplay {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -119,6 +251,8 @@ fn run(config: CliConfig) -> Result<(), String> {
         .take()
         .ok_or_else(|| "failed to capture injector stdout".to_string())?;
     let mut stats = ScanStats::new();
+    let mut live = LiveDisplay::new(config.live_ui && io::stdout().is_terminal());
+    live.maybe_draw(&stats, true).map_err(write_error)?;
     let mut raw = [0_u8; 44];
 
     loop {
@@ -127,8 +261,12 @@ fn run(config: CliConfig) -> Result<(), String> {
                 let result = RawInjectorPacket::from_bytes(raw).into_execution_result();
                 stats.tested += 1;
                 stats.last_result = Some(result.clone());
+                push_bounded(&mut stats.recent_results, result.clone(), INSTRUCTION_LOG_LEN);
                 if config.filters.detect(&result).is_some() {
                     record_artifact(&mut stats, result, config.low_mem, sync_file.as_mut())?;
+                    live.maybe_draw(&stats, true).map_err(write_error)?;
+                } else {
+                    live.maybe_draw(&stats, false).map_err(write_error)?;
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
@@ -144,6 +282,7 @@ fn run(config: CliConfig) -> Result<(), String> {
     }
 
     write_final_log(&stats, &command_line, &injector_command)?;
+    live.maybe_draw(&stats, true).map_err(write_error)?;
     if config.save {
         write_last(&stats)?;
     }
@@ -172,6 +311,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliConfig, CliParseError> {
             "--resume" => config.resume = true,
             "--sync" => config.sync = true,
             "--low-mem" => config.low_mem = true,
+            "--no-ui" => config.live_ui = false,
             _ => return Err(CliParseError::UnexpectedArgument(arg.clone())),
         }
     }
@@ -231,6 +371,11 @@ fn record_artifact(
     let is_new = low_mem || !stats.artifacts.contains_key(&key);
     if is_new {
         stats.artifacts_found += 1;
+        push_bounded(
+            &mut stats.recent_artifacts,
+            result.clone(),
+            ARTIFACT_LOG_LEN,
+        );
         if !low_mem {
             stats.artifacts.insert(key, result.clone());
         }
@@ -329,6 +474,42 @@ fn write_error(error: io::Error) -> String {
     format!("failed to write log: {error}")
 }
 
+fn push_bounded<T>(items: &mut VecDeque<T>, item: T, max_len: usize) {
+    if items.len() == max_len {
+        items.pop_front();
+    }
+    items.push_back(item);
+}
+
+fn comma(value: u64) -> String {
+    let text = value.to_string();
+    let mut out = String::new();
+    for (index, ch) in text.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
+}
+
+fn result_hex(result: &ExecutionResult) -> String {
+    sandblaster_core::format_full_hex(result.instruction.bytes())
+}
+
+fn format_result_row(result: &ExecutionResult) -> String {
+    format!(
+        "{:>3} {:>2} {:>2} {:>2} {:>4} {:>5}  {}",
+        result.valid,
+        result.length,
+        result.signum,
+        result.si_code,
+        result.disasm.length,
+        u8::from(result.disasm.known),
+        result_hex(result)
+    )
+}
+
 fn epoch_seconds_text() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -337,7 +518,7 @@ fn epoch_seconds_text() -> String {
 }
 
 fn help_text() -> &'static str {
-    "sifter [--len] [--dis] [--unk] [--ill] [--tick] [--save] [--resume] [--sync] [--low-mem] -- [injector args...]\n"
+    "sifter [--len] [--dis] [--unk] [--ill] [--tick] [--save] [--resume] [--sync] [--low-mem] [--no-ui] -- [injector args...]\n"
 }
 
 #[cfg(test)]
@@ -351,6 +532,7 @@ mod tests {
         let args = vec![
             "--unk".to_string(),
             "--sync".to_string(),
+            "--no-ui".to_string(),
             "--".to_string(),
             "-P1".to_string(),
             "-t".to_string(),
@@ -358,6 +540,7 @@ mod tests {
         let config = parse_cli_args(&args).expect("args should parse");
         assert!(config.filters.search_unknown);
         assert!(config.sync);
+        assert!(!config.live_ui);
         assert_eq!(config.injector_args, ["-P1", "-t"]);
     }
 

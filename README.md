@@ -47,6 +47,14 @@ scripts/x86-linux.sh injector -T -b -B 1 -i 90 -e 91
 scripts/x86-linux.sh sifter --unk --dis --len --sync --tick -- -P1 -t
 ```
 
+By default, `sifter` renders a live terminal dashboard with the tested count,
+finding count, estimated rate, elapsed time, current result, recent instructions,
+and recent findings. Use `--no-ui` for log-only automation:
+
+```sh
+scripts/x86-linux.sh sifter --no-ui --unk --sync -- -b -B 1 -i 00 -e 10
+```
+
 The runner intentionally refuses to run unless `uname` reports Linux on
 `x86_64`/`amd64`. The smoke commands avoid `-0` null-page mode and do not need
 root; scans that use `-0` still need the same privileges as the reference

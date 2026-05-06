@@ -798,11 +798,9 @@ fn page_size() -> io::Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use sandblaster_core::MAX_INSN_LENGTH;
-
     use crate::linux_x86::{
         normalize_fault_addr, FaultModel, FaultObservation, LinuxRuntimeEnvironment, ProbeContext,
-        TrapFlagPreamble, DEFAULT_ALTSTACK_SIZE, JMP_LENGTH, TF, UD2_SIZE,
+        TrapFlagPreamble, JMP_LENGTH, TF, UD2_SIZE,
     };
 
     #[test]
@@ -896,7 +894,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn allocates_executable_region_and_loads_instruction() {
-        use sandblaster_core::InstructionBytes;
+        use sandblaster_core::{InstructionBytes, MAX_INSN_LENGTH};
 
         use crate::linux_x86::ExecutableRegion;
 
@@ -919,7 +917,7 @@ mod tests {
         use crate::linux_x86::{SignalHandlers, SignalStack};
 
         let stack = SignalStack::install().expect("alt stack should install");
-        assert!(stack.len() >= DEFAULT_ALTSTACK_SIZE);
+        assert!(stack.len() >= super::DEFAULT_ALTSTACK_SIZE);
 
         let handlers = SignalHandlers::install(super::scaffold_signal_handler)
             .expect("handlers should install");
