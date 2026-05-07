@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/disasm",
     "crates/injector",
+    "crates/mobile_ffi",
     "crates/search",
     "crates/summary",
     "crates/tui",

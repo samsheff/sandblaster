@@ -8,3 +8,9 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Xcode user data (not needed for rebuild)
+*.xcuserstate
+**/xcuserdata/
+
+*.a

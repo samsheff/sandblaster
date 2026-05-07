@@ -55,6 +55,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandblaster-mobile-ffi"
+version = "0.1.0"
+dependencies = [
+ "sandblaster-core",
+ "sandblaster-disasm",
+ "sandblaster-injector",
+ "sandblaster-search",
+]
+
+[[package]]
 name = "sandblaster-search"
 version = "0.1.0"
 dependencies = [
