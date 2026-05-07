@@ -114,7 +114,7 @@ fn driven_candidates(
     let candidates = input
         .chunks(sandblaster_core::RAW_REPORT_INSN_BYTES)
         .filter(|chunk| chunk.len() == sandblaster_core::RAW_REPORT_INSN_BYTES)
-        .map(|chunk| sandblaster_core::InstructionBytes::from_slice(chunk))
+        .map(sandblaster_core::InstructionBytes::from_slice)
         .collect();
     Some(candidates)
 }

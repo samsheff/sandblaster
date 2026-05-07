@@ -1,6 +1,43 @@
 import Foundation
 import SwiftUI
 
+enum FuzzerMode: Int, CaseIterable, Identifiable {
+    case arm64Native = 0
+    case arm64DryRun = 1
+    case sandbox     = 2
+
+    var id: Int { rawValue }
+    var label: String {
+        switch self {
+        case .arm64Native: return "ARM64"
+        case .arm64DryRun: return "DRY-RUN"
+        case .sandbox:     return "SANDBOX"
+        }
+    }
+    var shortName: String {
+        switch self {
+        case .arm64Native: return "ARM64-NATIVE"
+        case .arm64DryRun: return "ARM64-DRYRUN"
+        case .sandbox:     return "SANDBOX"
+        }
+    }
+}
+
+enum FuzzerStrategy: Int, CaseIterable, Identifiable {
+    case tunnel = 0
+    case brute  = 1
+    case random = 2
+
+    var id: Int { rawValue }
+    var label: String {
+        switch self {
+        case .tunnel: return "TUNNEL"
+        case .brute:  return "BRUTE"
+        case .random: return "RANDOM"
+        }
+    }
+}
+
 struct Finding: Identifiable {
     let id = UUID()
     let signame: String
@@ -8,10 +45,15 @@ struct Finding: Identifiable {
     let siCode: Int
     let faultAddr: String
     let unknown: Bool
+    let isSandbox: Bool
+    let operation: String   // sandbox mode: operation name; instruction mode: ""
 
     var label: String {
-        if unknown && signame == "SIGTRAP" {
-            return "[\(signame)]  \(rawHex)  (undocumented)"
+        if isSandbox {
+            return "[SANDBOX]  \(operation)  result:\(siCode)"
+        }
+        if signame == "CLEAN" {
+            return "[CLEAN ]  \(rawHex)  (undocumented — executed cleanly)"
         }
         return "[\(signame)]  \(rawHex)  si:\(siCode)  fault:\(faultAddr)"
     }
@@ -25,6 +67,20 @@ final class FuzzerViewModel: ObservableObject {
     @Published var statusMessage = "Ready"
     @Published var zipURL: URL?
     @Published var droppedLineCount = 0
+    @Published var selectedMode: FuzzerMode = .arm64Native
+    @Published var backendMode: String = "—"
+    @Published var executedCount: Int = 0
+    @Published var execRate: Double = 0.0
+    @Published var findingsByKind: [String: Int] = [:]
+    @Published var selectedStrategy: FuzzerStrategy = .tunnel
+    @Published var startHex: String = ""
+    @Published var endHex: String = ""
+    @Published var seedText: String = ""
+    @Published var maxPacketsText: String = ""
+    @Published var queueDepth: UInt32 = 0
+    @Published var queueCapacity: UInt32 = 0
+    @Published var skippedCount: UInt64 = 0
+    @Published var lastInstruction: String = ""
 
     private let maxDisplayLines = 300
     private var pollTimer: Timer?
@@ -32,7 +88,13 @@ final class FuzzerViewModel: ObservableObject {
     private var findingsFileHandle: FileHandle?
     private var logURL: URL?
     private var findingsURL: URL?
+    private var startedAt: Date = Date()
+    private var stoppedAt: Date = Date()
     private let pollBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: 8192)
+
+    // Rate tracking: ring buffer of (timestamp, cumulative count) samples
+    private var rateSamples: [(Date, Int)] = []
+    private let rateSampleWindow: TimeInterval = 2.0
 
     deinit {
         pollBuf.deallocate()
@@ -42,9 +104,19 @@ final class FuzzerViewModel: ObservableObject {
 
     func start() {
         guard !isRunning else { return }
-        let result = sandblaster_scan_start(0)
+        let seed = UInt64(seedText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        let maxPackets = UInt64(maxPacketsText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        debugLog("start requested mode=\(selectedMode.shortName) strategy=\(selectedStrategy.label) start=\(startHex) end=\(endHex) seed=\(seed) maxPackets=\(maxPackets)")
+        let result = startConfiguredScan(seed: seed, maxPackets: maxPackets)
         guard result == 0 else {
-            statusMessage = "Failed to start (code \(result))"
+            let err = lastBackendError()
+            if err.isEmpty {
+                debugLog("start failed code=\(result)")
+                statusMessage = "Failed to start (code \(result))"
+            } else {
+                debugLog("start failed code=\(result) error=\(err)")
+                statusMessage = "Failed to start — see debug console"
+            }
             return
         }
         openOutputFiles()
@@ -52,8 +124,19 @@ final class FuzzerViewModel: ObservableObject {
         findings = []
         droppedLineCount = 0
         zipURL = nil
+        executedCount = 0
+        execRate = 0.0
+        findingsByKind = [:]
+        queueDepth = 0
+        queueCapacity = 0
+        skippedCount = 0
+        lastInstruction = ""
+        rateSamples = []
+        backendMode = selectedMode.shortName
+        startedAt = Date()
         isRunning = true
         statusMessage = "Running..."
+        debugLog("scan started mode=\(backendMode)")
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.drainQueue() }
         }
@@ -65,9 +148,34 @@ final class FuzzerViewModel: ObservableObject {
         sandblaster_scan_stop()
         drainQueue()
         flushAndClose()
+        stoppedAt = Date()
         isRunning = false
-        statusMessage = "Stopped — \(lines.count) packets, \(findings.count) findings"
+        statusMessage = "Stopped — \(executedCount) packets, \(findings.count) findings"
+        debugLog("scan stopped executed=\(executedCount) findings=\(findings.count) skipped=\(skippedCount) lastInstruction=\(lastInstruction)")
         buildZip()
+    }
+
+    private func startConfiguredScan(seed: UInt64, maxPackets: UInt64) -> Int32 {
+        let start = startHex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let end = endHex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mode = Int32(selectedMode.rawValue)
+        let strategy = Int32(selectedStrategy.rawValue)
+        let requireNative: Int32 = selectedMode == .arm64Native ? 1 : 0
+
+        return start.withCString { startPtr in
+            end.withCString { endPtr in
+                sandblaster_scan_start_config(
+                    mode,
+                    strategy,
+                    start.isEmpty ? nil : startPtr,
+                    end.isEmpty ? nil : endPtr,
+                    seed,
+                    maxPackets,
+                    5000,
+                    requireNative
+                )
+            }
+        }
     }
 
     // MARK: - Queue drain
@@ -84,26 +192,53 @@ final class FuzzerViewModel: ObservableObject {
                 }
             } else if n == 0 {
                 break
+            } else if n == -3 {
+                pollTimer?.invalidate()
+                pollTimer = nil
+                flushAndClose()
+                isRunning = false
+                statusMessage = "Stopped — packet buffer too small"
+                debugLog("scan stopped because Swift poll buffer is too small for next complete packet")
+                buildZip()
+                break
             } else {
                 pollTimer?.invalidate()
                 pollTimer = nil
                 flushAndClose()
                 isRunning = false
-                statusMessage = "Done — \(lines.count + newLines.count) packets, \(findings.count) findings"
+                updateBackendStatus()
+                let err = lastBackendError()
+                if !err.isEmpty {
+                    debugLog("scan error: \(err)")
+                    statusMessage = "Error — see debug console"
+                } else {
+                    statusMessage = "Done — \(lines.count + newLines.count) packets, \(findings.count) findings"
+                    debugLog("scan done packets=\(lines.count + newLines.count) findings=\(findings.count)")
+                }
                 buildZip()
                 break
             }
         }
+        updateBackendStatus()
         guard !newLines.isEmpty else { return }
 
         writeLogsToFile(newLines)
 
         for line in newLines {
+            // Detect silent dry-run fallback from Rust backend
+            if line.contains("native backend unavailable") {
+                backendMode = "ARM64-DRYRUN"
+                debugLog(line)
+            }
             if let f = parseFinding(line) {
                 findings.append(f)
                 writeFindingToFile(f)
+                findingsByKind[f.signame, default: 0] += 1
             }
         }
+
+        executedCount += newLines.count
+        updateRate()
 
         lines.append(contentsOf: newLines)
         let excess = lines.count - maxDisplayLines
@@ -111,6 +246,46 @@ final class FuzzerViewModel: ObservableObject {
             lines.removeFirst(excess)
             droppedLineCount += excess
         }
+    }
+
+    private func updateBackendStatus() {
+        var status = SandblasterScanStatus()
+        guard sandblaster_scan_status(&status) == 0 else { return }
+        queueDepth = status.queue_depth
+        queueCapacity = status.queue_capacity
+        skippedCount = status.skipped
+        if let last = copyCStringLike({ buf, len in sandblaster_last_instruction(buf, len) }) {
+            lastInstruction = last
+        }
+    }
+
+    private func lastBackendError() -> String {
+        copyCStringLike({ buf, len in sandblaster_last_error(buf, len) }) ?? ""
+    }
+
+    private func debugLog(_ message: String) {
+        NSLog("[sandblaster-ios] %@", message)
+    }
+
+    private func copyCStringLike(_ call: (UnsafeMutablePointer<UInt8>?, Int32) -> Int32) -> String? {
+        let cap = 4096
+        let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: cap)
+        defer { buf.deallocate() }
+        let n = call(buf, Int32(cap))
+        guard n > 0 else { return nil }
+        return String(bytes: UnsafeBufferPointer(start: buf, count: Int(n)), encoding: .utf8)
+    }
+
+    private func updateRate() {
+        let now = Date()
+        rateSamples.append((now, executedCount))
+        // Keep only samples within the window
+        rateSamples = rateSamples.filter { now.timeIntervalSince($0.0) <= rateSampleWindow }
+        guard rateSamples.count >= 2 else { execRate = 0; return }
+        let oldest = rateSamples.first!
+        let elapsed = now.timeIntervalSince(oldest.0)
+        let delta = executedCount - oldest.1
+        execRate = elapsed > 0 ? Double(delta) / elapsed : 0
     }
 
     // MARK: - File I/O
@@ -168,22 +343,52 @@ final class FuzzerViewModel: ObservableObject {
             .replacingOccurrences(of: "sandblaster_logs_", with: "")
         let zURL = dir.appendingPathComponent("sandblaster_\(stamp).zip")
 
-        // Append findings count footer to the findings file text
         var findingsData = (try? Data(contentsOf: fURL)) ?? Data()
         let footer = "# Total findings: \(findings.count)\n"
         findingsData += footer.data(using: .utf8)!
+
+        let metaData = buildMetadata()
 
         do {
             let logsData = try Data(contentsOf: lURL)
             let zipData = makeZip(entries: [
                 ("logs.txt", logsData),
-                ("findings.txt", findingsData)
+                ("findings.txt", findingsData),
+                ("metadata.json", metaData)
             ])
             try zipData.write(to: zURL)
             zipURL = zURL
         } catch {
             zipURL = lURL
         }
+    }
+
+    private func buildMetadata() -> Data {
+        let iso = ISO8601DateFormatter()
+        let duration = stoppedAt.timeIntervalSince(startedAt)
+        let device = UIDevice.current
+        var info: [String: Any] = [
+            "tool": "sandblaster",
+            "platform": "ios-arm64",
+            "mode": selectedMode.shortName.lowercased().replacingOccurrences(of: "-", with: "_"),
+            "device_model": device.model,
+            "os_version": device.systemVersion,
+            "started_at": iso.string(from: startedAt),
+            "stopped_at": iso.string(from: stoppedAt),
+            "duration_seconds": Int(duration),
+            "executed_count": executedCount,
+            "skipped_count": skippedCount,
+            "last_instruction": lastInstruction,
+            "start_hex": startHex,
+            "end_hex": endHex,
+            "strategy": selectedStrategy.label.lowercased(),
+            "native_required": selectedMode == .arm64Native,
+            "findings_count": findings.count,
+            "findings_by_signal": findingsByKind
+        ]
+        _ = info  // suppress unused warning path
+        let data = (try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        return data
     }
 
     private func makeZip(entries: [(String, Data)]) -> Data {
@@ -266,21 +471,47 @@ final class FuzzerViewModel: ObservableObject {
 
     private func parseFinding(_ line: String) -> Finding? {
         let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard !f.isEmpty else { return nil }
+
+        // ── SB2: sandbox_check result ──────────────────────────────────────────
+        if f[0] == "SB2" {
+            guard f.count >= 6 else { return nil }
+            let result = Int(f[4]) ?? 0
+            // Only flag errors (-1) and unexpected returns (2+); denies (1) are normal
+            guard result < 0 || result >= 2 else { return nil }
+            return Finding(
+                signame: "SANDBOX",
+                rawHex: "",
+                siCode: result,
+                faultAddr: "",
+                unknown: false,
+                isSandbox: true,
+                operation: f[3]
+            )
+        }
+
+        // ── SB1: instruction execution result ─────────────────────────────────
         guard f.count == 11, f[0] == "SB1" else { return nil }
         let signum     = Int(f[7]) ?? 0
         let disasKnown = Int(f[4]) ?? 1
         let siCode     = Int(f[8]) ?? 0
 
-        if signum == 5 && disasKnown == 1 { return nil }
+        // signum=0 on a known instruction → clean expected execution (skip)
+        if signum == 0 && disasKnown == 1 { return nil }
+        // SIGILL (4) on unknown instruction → expected undefined ARM64 encoding (skip)
+        if signum == 4 && disasKnown == 0 { return nil }
+        // SIGTRAP with si_code=0 is the dry-run backend's synthetic marker — skip.
+        // Real kernel SIGTRAPs always have si_code ≥ 1 (TRAP_BRKPT=1, TRAP_TRACE=2).
+        if signum == 5 && siCode == 0 { return nil }
 
         let signame: String
         switch signum {
+        case 0:  signame = "CLEAN  "   // unknown instruction that executed cleanly
         case 4:  signame = "SIGILL "
-        case 11: signame = "SIGSEGV"
+        case 5:  signame = "SIGTRAP"
         case 7:  signame = "SIGBUS "
         case 8:  signame = "SIGFPE "
-        case 5:  signame = "SIGTRAP"
-        case 0:  signame = "CLEAN  "
+        case 11: signame = "SIGSEGV"
         default: signame = "SIG\(signum)   ".prefix(7).description
         }
 
@@ -289,7 +520,9 @@ final class FuzzerViewModel: ObservableObject {
             rawHex: f[10],
             siCode: siCode,
             faultAddr: f[9],
-            unknown: disasKnown == 0
+            unknown: disasKnown == 0,
+            isSandbox: false,
+            operation: ""
         )
     }
 }

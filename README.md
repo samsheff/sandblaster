@@ -1,37 +1,36 @@
+![Sandblaster banner](.github/readmebanner.png)
+
 # Sandblaster
 
-Sandblaster is a processor fuzzer for discovering unusual instruction behavior
-on real x86_64 CPUs. It generates, executes, disassembles, and records processor
-test cases through a Rust workspace built for local scans and repeatable
-automation.
+Sandblaster is a multiplatform processor fuzzer for discovering unusual
+instruction behavior on real hardware. It generates, executes, disassembles,
+and records processor test cases through a Rust workspace with native runners
+for Linux/x86_64, Android/ARM64, and a signed iOS/ARM64 app agent.
 
-The current implementation provides:
+The workspace includes:
 
-- a Rust workspace split into `core`, `injector`, `search`, `disasm`, `summary`, `tui`, and `cli`
-- exact legacy log/tick parsing and writing primitives
-- anomaly filtering semantics copied from the Python frontend
-- search strategy abstractions for brute, random, tunnel, and driven modes
-- a Linux/x86_64 generated-code injector backend
-- an Android/ARM64 generated-code backend intended for on-device CLI runs
-- an `iced-x86` disassembler backend wired into injector raw packets
-- target-aware `SB1` result packets for new scans
+- target-aware instruction generation, execution, packet, and summary crates
+- Linux/x86_64 generated-code execution for real x86 hosts
+- Android/ARM64 generated-code execution for on-device `adb shell` runs
+- iOS/ARM64 in-process execution through `mobile/ios-agent/SandblasterApp`
+- `SB1` line-oriented result packets with platform and architecture metadata
+- an `iced-x86` disassembler backend for x86 result classification
+- a terminal sifter UI for live scans, logs, sync files, and summaries
 
-Current status:
+## Quick Check
 
-- `cargo test --workspace` validates the shared compatibility layer
-- `injector -R` emits line-oriented `SB1` packets with target metadata
-- `disas_known` and `disas_length` are populated by a real x86_64 decoder
-- `sifter` records legacy findings in `data/log` and `data/sync`, plus additive
-  `data/findings.tsv` and `data/summary` metadata
-- the native low-level execution backend is implemented for real `x86_64` Linux
-- the Android ARM64 backend executes fixed-width 4-byte probes in fork-isolated
-  child processes and reports the terminating signal
-- `injector -j` supervises multiple worker processes for finite brute/tunnel
-  ranges, with `-l` controlling the split width
+Run the Rust workspace tests from the repository root:
 
-## Running on real x86_64 Linux
+```sh
+cargo test --workspace
+```
 
-On an actual x86_64 Linux system, use the native runner:
+The main scripts wrap target-specific setup and keep platform checks close to
+the runner they exercise.
+
+## Linux x86_64
+
+On a real x86_64 Linux system, use the native runner:
 
 ```sh
 scripts/x86-linux.sh check
@@ -39,7 +38,7 @@ scripts/x86-linux.sh build
 scripts/x86-linux.sh test
 ```
 
-Start the Linux/x86 backend without executing generated probes:
+Start the backend without executing generated probes:
 
 ```sh
 scripts/x86-linux.sh smoke
@@ -59,9 +58,9 @@ SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
 scripts/x86-linux.sh sifter --unk --dis --len --sync --tick -- -t -P1
 ```
 
-By default, `sifter` renders a live terminal dashboard with the tested count,
-finding count, estimated rate, elapsed time, current result, recent instructions,
-and recent findings. Use `--no-ui` for log-only automation:
+By default, `sifter` renders a live terminal dashboard with tested count,
+finding count, estimated rate, elapsed time, current result, recent
+instructions, and recent findings. Use `--no-ui` for log-only automation:
 
 ```sh
 scripts/x86-linux.sh sifter --no-ui --unk --sync -- -b -B 1 -i 00 -e 10
@@ -76,22 +75,14 @@ SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
 scripts/x86-linux.sh sifter --unk --dis --len --sync --tick --save -- -b -B 1 -i 00 -e ff
 ```
 
-Resume a saved run. `--save` updates `data/last` as packets arrive, and
-`--resume` appends that value as the injector start instruction:
+Resume a saved run:
 
 ```sh
 SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
 scripts/x86-linux.sh sifter --unk --dis --len --sync --tick --save --resume -- -b -B 1 -e ff
 ```
 
-When passed directly to `injector`, `-x` emits periodic progress ticks to
-stderr. Through `sifter`, `--tick` writes the latest raw instruction bytes to
-`data/tick`.
-
-Run a bounded scan with multiple worker processes. Parallel workers are
-supported for finite brute and tunnel ranges; random and driven modes should use
-`-j 1`. If `-j` is greater than one and `-l` is omitted, the injector splits on
-one leading byte:
+Parallel workers are supported for finite brute and tunnel ranges:
 
 ```sh
 scripts/x86-linux.sh injector -T -b -B 1 -i 00 -e ff -j 4 -l 1
@@ -106,17 +97,8 @@ Pin injector workers to a CPU with `-c`:
 scripts/x86-linux.sh injector -T -c 0 -b -B 1 -i 90 -e 91
 ```
 
-Run a full tunnel scan:
-
-```sh
-scripts/x86-linux.sh build
-
-SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
-scripts/x86-linux.sh sifter --unk --dis --len --sync --tick --save -- -t -P1
-```
-
-To validate the frontend, logs, and UI without executing generated processor
-instructions, pass `--dry-run` through to the injector:
+Validate the frontend, logs, and UI without executing generated instructions by
+passing `--dry-run` through to the injector:
 
 ```sh
 scripts/x86-linux.sh injector --dry-run -T -b -B 1 -i 90 -e 91
@@ -125,34 +107,15 @@ SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
 scripts/x86-linux.sh sifter --unk --sync --tick -- --dry-run -b -B 1 -i 90 -e 91
 ```
 
-If dry-run increments `tested` but the same command without `--dry-run` stays at
-zero, the unsafe native execution backend is stuck before its first result.
+The native runner intentionally refuses to run unless `uname` reports Linux on
+`x86_64`/`amd64`. Smoke commands avoid `-0` null-page mode and do not need root;
+scans that use `-0` still need root and a kernel configuration that allows
+mapping page zero.
 
-Meaningful `--unk`, `--dis`, and `--len` findings depend on the injector's
-disassembler fields. The Rust injector now fills those fields using `iced-x86`,
-so `--unk` no longer reports every successfully executed instruction as
-unknown.
+## Android ARM64
 
-The runner intentionally refuses to run unless `uname` reports Linux on
-`x86_64`/`amd64`. The smoke commands avoid `-0` null-page mode and do not need
-root; scans that use `-0` still need root and a kernel configuration that allows
-mapping page zero. If `-0` fails, the injector exits with the underlying mmap
-error rather than silently continuing without null-page access.
-
-`data/log` and `data/sync` keep the reference-compatible legacy text record
-shape. `data/findings.tsv` adds reproducible command metadata and raw fields for
-each deduplicated finding, while `data/summary` groups findings by opcode,
-leading prefix, signal, and disassembler class.
-
-The Rust disassembler is `iced-x86`; the reference used Capstone. The raw packet
-contract has been superseded by `SB1` packets for new scans. The x86 fields
-still record `disas_known` and `disas_length`, so mnemonic and operand
-formatting differences are intentionally not part of compatibility.
-
-## Running on Android ARM64
-
-The Android backend targets `aarch64-linux-android` and is meant to run through
-`adb shell` on a real ARM64 device:
+The Android backend targets `aarch64-linux-android` and runs on a real ARM64
+device through `adb shell`:
 
 ```sh
 scripts/android-arm64.sh check
@@ -178,49 +141,57 @@ Run the local `sifter` frontend against the device injector:
 scripts/android-arm64.sh sifter --no-ui --unk --sync -- -b -B 4 -i 1f2003d5 -e 1f2003d6
 ```
 
-The first Android backend is intentionally conservative: ARM64 candidates are
-fixed-width 4-byte instructions, x86 prefix handling is disabled, and the result
+The Android backend is intentionally conservative: ARM64 candidates are
+fixed-width 4-byte instructions, x86 prefix handling is disabled, and result
 records currently include the child process signal rather than full `siginfo`
 and register-context recovery.
 
 ## iOS ARM64
 
-iOS is represented as the `ios-arm64` target in shared configuration and packet
-plumbing, but native generated-code execution is expected to run inside a signed
-developer app/agent rather than a spawned CLI process. The scaffold lives in
-`mobile/ios-agent`.
+The iOS agent lives in `mobile/ios-agent/SandblasterApp`. iOS generated-code
+execution runs in-process inside a signed developer app instead of a spawned CLI
+binary, matching non-jailbroken iOS app constraints.
 
-Start iOS work by linking the Rust library into an Xcode app target, running
-`--target ios-arm64 --dry-run` equivalent scan logic in-process, and then adding
-an entitlement-aware executable-memory feasibility probe on a physical device.
+Build the Rust static library and copy it into the Xcode project:
 
-## Testing x86 Linux from macOS/arm
+```sh
+scripts/ios-build.sh
+```
 
-The injector backend is written for `linux + x86_64`. On Apple Silicon macOS,
-use Docker Desktop's `linux/amd64` emulation to build and smoke-test it without a
-physical x86 machine.
+Then open the app project in Xcode:
 
-Start Docker Desktop first, then build the amd64 development image:
+```sh
+open mobile/ios-agent/SandblasterApp/SandblasterApp.xcodeproj
+```
+
+Select your development team, connect a physical iOS device, and run the
+`SandblasterApp` scheme. Results are written to the app container and can be
+retrieved through Xcode Devices and Simulators.
+
+The iOS app uses the same target-aware packet plumbing as the other runners and
+exports `SB1` logs for `ios-arm64`. Start with dry-run or narrow ARM64 ranges
+before broader generated-code sweeps.
+
+Import an exported iOS `SB1` log into the host-side sifter pipeline:
+
+```sh
+cargo run -p sandblaster-cli --bin sifter -- \
+  --input path/to/logs.txt --unk --dis --len --sync --no-ui
+```
+
+## macOS and Docker
+
+The low-level x86 injector is written for `linux + x86_64`. On Apple Silicon
+macOS, use Docker Desktop's `linux/amd64` emulation to build and smoke-test it
+without a physical x86 machine:
 
 ```sh
 scripts/x86-docker.sh build
-```
-
-Run the workspace tests inside the emulated x86_64 Linux container:
-
-```sh
 scripts/x86-docker.sh test
-```
-
-Run a bounded injector smoke test:
-
-```sh
 scripts/x86-docker.sh smoke
 ```
 
-This smoke test starts the Linux/x86 backend and exits without executing
-generated instruction probes. To try the generated-code execution path under
-Docker's amd64 emulation, run:
+Try the generated-code execution path under Docker's amd64 emulation:
 
 ```sh
 scripts/x86-docker.sh exec-smoke
@@ -232,8 +203,18 @@ Open an interactive shell in the same environment:
 scripts/x86-docker.sh shell
 ```
 
-The smoke tests intentionally avoid `-0` null-page mode, so they do not require
-a privileged container. Treat this setup as a development and compatibility
-check: Docker's amd64 emulation is useful for exercising Linux/x86 builds and
-startup, but generated-code signal handling may differ from a real x86 Linux
-host and is not authoritative evidence of behavior on real x86 silicon.
+Treat Docker as a development and compatibility check. It is useful for
+exercising Linux/x86 builds and startup, but generated-code signal handling may
+differ from a real x86 Linux host and is not authoritative evidence of behavior
+on real x86 silicon.
+
+## Results
+
+`data/log` and `data/sync` keep the reference-compatible legacy text record
+shape. `data/findings.tsv` adds reproducible command metadata and raw fields for
+each deduplicated finding, while `data/summary` groups findings by opcode,
+leading prefix, signal, and disassembler class.
+
+New scans use `SB1` packets with explicit target metadata. The x86 fields record
+`disas_known` and `disas_length`; mnemonic and operand formatting differences
+are intentionally outside the compatibility contract.

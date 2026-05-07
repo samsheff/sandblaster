@@ -630,10 +630,10 @@ impl LinuxX86Backend {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (nx_support, enable_null_access);
-            return Err(io::Error::new(
+            Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Linux x86 backend is only implemented on Linux hosts",
-            ));
+            ))
         }
 
         #[cfg(target_os = "linux")]
@@ -687,6 +687,12 @@ impl LinuxX86Backend {
             preamble_length: self.preamble.byte_len,
             probe_length,
         }
+    }
+}
+
+impl Default for LinuxX86Backend {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

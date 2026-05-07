@@ -36,8 +36,10 @@ impl CpuMetadata {
     }
 
     pub fn from_cpuinfo_str(content: &str) -> Self {
-        let mut metadata = Self::default();
-        metadata.raw_lines = content.lines().take(7).map(str::to_string).collect();
+        let mut metadata = Self {
+            raw_lines: content.lines().take(7).map(str::to_string).collect(),
+            ..Self::default()
+        };
 
         for line in content.lines() {
             let Some((key, value)) = line.split_once(':') else {

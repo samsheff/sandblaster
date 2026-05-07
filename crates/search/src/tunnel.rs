@@ -54,20 +54,20 @@ impl TunnelStrategy {
         }
 
         let map_start = prefix_len;
-        match self.bytes.get(map_start..=self.index) {
-            Some([0x0f]) => true,
-            Some([0x0f, 0x38 | 0x3a]) => true,
-            Some([0xc5]) => true,
-            Some([0xc5, _]) => true,
-            Some([0xc4]) => true,
-            Some([0xc4, _]) => true,
-            Some([0xc4, _, _]) => true,
-            Some([0x62]) => true,
-            Some([0x62, _]) => true,
-            Some([0x62, _, _]) => true,
-            Some([0x62, _, _, _]) => true,
-            _ => false,
-        }
+        matches!(
+            self.bytes.get(map_start..=self.index),
+            Some([0x0f])
+                | Some([0x0f, 0x38 | 0x3a])
+                | Some([0xc5])
+                | Some([0xc5, _])
+                | Some([0xc4])
+                | Some([0xc4, _])
+                | Some([0xc4, _, _])
+                | Some([0x62])
+                | Some([0x62, _])
+                | Some([0x62, _, _])
+                | Some([0x62, _, _, _])
+        )
     }
 }
 

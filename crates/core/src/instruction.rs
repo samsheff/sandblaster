@@ -63,7 +63,7 @@ impl fmt::Display for InstructionBytes {
 
 pub fn parse_hex_instruction(input: &str) -> Result<InstructionBytes, String> {
     let trimmed = input.trim();
-    if trimmed.len() % 2 != 0 {
+    if !trimmed.len().is_multiple_of(2) {
         return Err("hex input must have an even length".to_string());
     }
     if trimmed.len() / 2 > RAW_REPORT_INSN_BYTES {

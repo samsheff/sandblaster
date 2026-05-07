@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 mod brute;
 mod driven;
 mod random;

@@ -12,3 +12,4 @@ sandblaster-core = { path = "../core" }
 sandblaster-disasm = { path = "../disasm" }
 sandblaster-injector = { path = "../injector" }
 sandblaster-search = { path = "../search" }
+libc = "0.2"

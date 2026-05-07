@@ -7,21 +7,23 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3A66C08E2FAC20D4005159A3 /* libsandblaster_mobile_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 3A66C08D2FAC20D4005159A3 /* libsandblaster_mobile_ffi.a */; };
+		AA2222222222222222220001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA2222222222222222220000 /* Assets.xcassets */; };
 		AA1111111111111111110016 /* SandblasterApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA111111111111111111000E /* SandblasterApp.swift */; };
 		AA1111111111111111110017 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA111111111111111111000F /* ContentView.swift */; };
 		AA1111111111111111110018 /* FuzzerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1111111111111111110010 /* FuzzerViewModel.swift */; };
-		AA1111111111111111110019 /* libsandblaster_mobile_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = AA1111111111111111110011 /* libsandblaster_mobile_ffi.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		3A66C08D2FAC20D4005159A3 /* libsandblaster_mobile_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libsandblaster_mobile_ffi.a; path = libs/libsandblaster_mobile_ffi.a; sourceTree = SOURCE_ROOT; };
 		AA111111111111111111000E /* SandblasterApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SandblasterApp.swift; sourceTree = "<group>"; };
 		AA111111111111111111000F /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		AA1111111111111111110010 /* FuzzerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FuzzerViewModel.swift; sourceTree = "<group>"; };
-		AA1111111111111111110011 /* libsandblaster_mobile_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libsandblaster_mobile_ffi.a; path = libs/libsandblaster_mobile_ffi.a; sourceTree = SOURCE_ROOT; };
 		AA1111111111111111110012 /* SandblasterApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SandblasterApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA1111111111111111110013 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA1111111111111111110014 /* SandblasterBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SandblasterBridge.h; sourceTree = "<group>"; };
 		AA1111111111111111110015 /* SandblasterApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SandblasterApp.entitlements; sourceTree = "<group>"; };
+		AA2222222222222222220000 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -29,7 +31,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AA1111111111111111110019 /* libsandblaster_mobile_ffi.a in Frameworks */,
+				3A66C08E2FAC20D4005159A3 /* libsandblaster_mobile_ffi.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -61,7 +63,8 @@
 				AA1111111111111111110014 /* SandblasterBridge.h */,
 				AA1111111111111111110015 /* SandblasterApp.entitlements */,
 				AA1111111111111111110013 /* Info.plist */,
-				AA1111111111111111110011 /* libsandblaster_mobile_ffi.a */,
+				AA2222222222222222220000 /* Assets.xcassets */,
+				3A66C08D2FAC20D4005159A3 /* libsandblaster_mobile_ffi.a */,
 			);
 			path = SandblasterApp;
 			sourceTree = "<group>";
@@ -124,6 +127,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA2222222222222222220001 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -279,7 +283,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/SandblasterApp",
+					"$(PROJECT_DIR)/libs",
 				);
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
@@ -323,7 +327,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/SandblasterApp",
+					"$(PROJECT_DIR)/libs",
 				);
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (

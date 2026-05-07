@@ -9,11 +9,14 @@ struct ContentView: View {
             Divider().background(Color(white: 0.2))
             logPanel
             Divider().background(Color(white: 0.2))
+            statsBar
+            Divider().background(Color(white: 0.2))
             findingsPanel
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .safeAreaInset(edge: .bottom, spacing: 0) {
+
             VStack(spacing: 0) {
                 Divider().background(Color(white: 0.2))
                 controlBar
@@ -27,9 +30,18 @@ struct ContentView: View {
 
     private var headerBar: some View {
         HStack {
-            Text("SANDBLASTER  ios-arm64")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(.white)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("SANDBLASTER  ios-arm64")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+                if vm.isRunning || vm.executedCount > 0 {
+                    Text(vm.backendMode)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(vm.backendMode.contains("DRYRUN")
+                            ? Color(red: 1.0, green: 0.6, blue: 0.2)
+                            : Color(white: 0.5))
+                }
+            }
             Spacer()
             Text(vm.statusMessage)
                 .font(.system(size: 11, design: .monospaced))
@@ -78,6 +90,37 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Stats bar
+
+    private var statsBar: some View {
+        let rate = vm.execRate >= 1000
+            ? String(format: "%.1fk/s", vm.execRate / 1000)
+            : String(format: "%.0f/s", vm.execRate)
+        let total = vm.executedCount.formatted()
+        let queue = vm.queueCapacity == 0 ? "—" : "\(vm.queueDepth)/\(vm.queueCapacity)"
+        return HStack(spacing: 0) {
+            statCell("RATE",     rate)
+            statCell("TOTAL",    total)
+            statCell("FINDINGS", "\(vm.findings.count)")
+            statCell("QUEUE",    queue)
+        }
+        .frame(maxWidth: .infinity)
+        .background(Color(white: 0.07))
+    }
+
+    private func statCell(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(Color(white: 0.45))
+            Text(value)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(.white)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
     }
 
     // MARK: - Findings panel
@@ -133,12 +176,14 @@ struct ContentView: View {
     }
 
     private func colorFor(_ f: Finding) -> Color {
-        if f.unknown { return Color(red: 1, green: 0.85, blue: 0.4) }
+        if f.isSandbox { return Color(red: 0.7, green: 0.5, blue: 1.0) }
         switch f.signame.trimmingCharacters(in: .whitespaces) {
+        case "CLEAN":   return Color(red: 0.4, green: 1.0, blue: 0.9)  // most exciting
         case "SIGILL":  return Color(red: 1.0, green: 0.4, blue: 0.4)
         case "SIGSEGV": return Color(red: 1.0, green: 0.5, blue: 0.3)
         case "SIGBUS":  return Color(red: 1.0, green: 0.6, blue: 0.2)
         case "SIGFPE":  return Color(red: 0.9, green: 0.4, blue: 0.9)
+        case "SIGTRAP": return Color(red: 1.0, green: 0.85, blue: 0.4)
         default:        return .white
         }
     }
@@ -146,21 +191,70 @@ struct ContentView: View {
     // MARK: - Controls
 
     private var controlBar: some View {
-        HStack(spacing: 10) {
-            ctrlButton("START", active: !vm.isRunning) { vm.start() }
-                .disabled(vm.isRunning)
-            ctrlButton("STOP",  active: vm.isRunning)  { vm.stop() }
-                .disabled(!vm.isRunning)
-            if let url = vm.zipURL, !vm.isRunning {
-                ShareLink(item: url) {
-                    ctrlLabel("EXPORT", active: true)
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Picker("Mode", selection: $vm.selectedMode) {
+                    ForEach(FuzzerMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
                 }
-            } else {
-                ctrlLabel("EXPORT", active: false)
+                .pickerStyle(.segmented)
+                .disabled(vm.isRunning)
+
+                Picker("Strategy", selection: $vm.selectedStrategy) {
+                    ForEach(FuzzerStrategy.allCases) { strategy in
+                        Text(strategy.label).tag(strategy)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(vm.isRunning || vm.selectedMode == .sandbox)
+            }
+
+            HStack(spacing: 8) {
+                configField("START", text: $vm.startHex)
+                configField("END", text: $vm.endHex)
+                configField("SEED", text: $vm.seedText)
+                configField("MAX", text: $vm.maxPacketsText)
+            }
+
+            HStack(spacing: 10) {
+                ctrlButton("START", active: !vm.isRunning) { vm.start() }
+                    .disabled(vm.isRunning)
+                ctrlButton("STOP",  active: vm.isRunning)  { vm.stop() }
+                    .disabled(!vm.isRunning)
+                if let url = vm.zipURL, !vm.isRunning {
+                    ShareLink(item: url) {
+                        ctrlLabel("EXPORT", active: true)
+                    }
+                } else {
+                    ctrlLabel("EXPORT", active: false)
+                }
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    private func configField(_ label: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .foregroundColor(Color(white: 0.45))
+            TextField("", text: text)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.white)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .disabled(vm.isRunning)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+                .background(Color(white: 0.02))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color(white: 0.25), lineWidth: 1)
+                )
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func ctrlButton(_ label: String, active: Bool, action: @escaping () -> Void) -> some View {

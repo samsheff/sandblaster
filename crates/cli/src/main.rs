@@ -33,6 +33,7 @@ struct CliConfig {
     sync: bool,
     low_mem: bool,
     live_ui: bool,
+    input_path: Option<PathBuf>,
     injector_args: Vec<String>,
 }
 
@@ -91,6 +92,7 @@ impl Default for CliConfig {
             sync: false,
             low_mem: false,
             live_ui: true,
+            input_path: None,
             injector_args: Vec::new(),
         }
     }
@@ -243,26 +245,51 @@ fn run(config: CliConfig) -> Result<(), String> {
     injector_args.push("-R".to_string());
 
     let command_line = env::args().collect::<Vec<_>>().join(" ");
-    let injector_command = format!("{} {}", injector_path().display(), injector_args.join(" "));
+    let injector_command = if let Some(path) = &config.input_path {
+        format!("import {}", path.display())
+    } else {
+        format!("{} {}", injector_path().display(), injector_args.join(" "))
+    };
     let mut sync_file = if config.sync {
         Some(create_sync_log(&command_line, &injector_command)?)
     } else {
         None
     };
 
-    let mut child = spawn_injector(&injector_args)?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to capture injector stdout".to_string())?;
-    let mut lines = BufReader::new(stdout).lines();
+    let mut child = if config.input_path.is_none() {
+        Some(spawn_injector(&injector_args)?)
+    } else {
+        None
+    };
+    let input_file = if let Some(path) = &config.input_path {
+        Some(File::open(path).map_err(|error| {
+            format!(
+                "failed to open input packet log {}: {error}",
+                path.display()
+            )
+        })?)
+    } else {
+        None
+    };
+    let mut lines: Box<dyn Iterator<Item = io::Result<String>>> = if let Some(file) = input_file {
+        Box::new(BufReader::new(file).lines())
+    } else {
+        let stdout = child
+            .as_mut()
+            .and_then(|child| child.stdout.take())
+            .ok_or_else(|| "failed to capture injector stdout".to_string())?;
+        Box::new(BufReader::new(stdout).lines())
+    };
     let mut stats = ScanStats::new();
     let mut live = LiveDisplay::new(config.live_ui && io::stdout().is_terminal());
     live.maybe_draw(&stats, true).map_err(write_error)?;
 
-    while let Some(line) = lines.next() {
+    for line in lines.by_ref() {
         match line {
             Ok(line) => {
+                if line.trim().is_empty() || line.starts_with('#') {
+                    continue;
+                }
                 let packet = VersionedPacket::parse_line(&line)?;
                 stats.target = Some(packet.target);
                 let result = packet.result;
@@ -290,11 +317,13 @@ fn run(config: CliConfig) -> Result<(), String> {
         }
     }
 
-    let status = child
-        .wait()
-        .map_err(|error| format!("failed to wait for injector: {error}"))?;
-    if !status.success() {
-        return Err(format!("injector exited with {status}"));
+    if let Some(mut child) = child {
+        let status = child
+            .wait()
+            .map_err(|error| format!("failed to wait for injector: {error}"))?;
+        if !status.success() {
+            return Err(format!("injector exited with {status}"));
+        }
     }
 
     write_final_log(&stats, &command_line, &injector_command)?;
@@ -312,14 +341,27 @@ fn parse_cli_args(args: &[String]) -> Result<CliConfig, CliParseError> {
     let mut config = CliConfig::default();
     let mut passthrough = false;
 
-    for arg in args {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
         if passthrough {
             config.injector_args.push(arg.clone());
+            index += 1;
             continue;
         }
 
         match arg.as_str() {
             "--" => passthrough = true,
+            "--input" => {
+                index += 1;
+                let Some(path) = args.get(index) else {
+                    return Err(CliParseError::UnexpectedArgument(
+                        "--input requires a path".to_string(),
+                    ));
+                };
+                config.input_path = Some(PathBuf::from(path));
+                config.live_ui = false;
+            }
             "--len" => config.filters.search_length = true,
             "--dis" => config.filters.search_disasm_length = true,
             "--unk" => config.filters.search_unknown = true,
@@ -332,6 +374,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliConfig, CliParseError> {
             "--no-ui" => config.live_ui = false,
             _ => return Err(CliParseError::UnexpectedArgument(arg.clone())),
         }
+        index += 1;
     }
 
     Ok(config)
@@ -638,7 +681,7 @@ fn epoch_seconds_text() -> String {
 }
 
 fn help_text() -> &'static str {
-    "sifter [--len] [--dis] [--unk] [--ill] [--tick] [--save] [--resume] [--sync] [--low-mem] [--no-ui] -- [injector args...]\n"
+    "sifter [--input sb1.log] [--len] [--dis] [--unk] [--ill] [--tick] [--save] [--resume] [--sync] [--low-mem] [--no-ui] -- [injector args...]\n"
 }
 
 #[cfg(test)]
@@ -662,6 +705,22 @@ mod tests {
         assert!(config.sync);
         assert!(!config.live_ui);
         assert_eq!(config.injector_args, ["-P1", "-t"]);
+    }
+
+    #[test]
+    fn parses_input_import_path() {
+        let args = vec![
+            "--input".to_string(),
+            "ios.log".to_string(),
+            "--unk".to_string(),
+        ];
+        let config = parse_cli_args(&args).expect("args should parse");
+        assert_eq!(
+            config.input_path.as_deref(),
+            Some(std::path::Path::new("ios.log"))
+        );
+        assert!(config.filters.search_unknown);
+        assert!(!config.live_ui);
     }
 
     #[test]

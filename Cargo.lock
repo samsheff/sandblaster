@@ -58,6 +58,7 @@ dependencies = [
 name = "sandblaster-mobile-ffi"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "sandblaster-core",
  "sandblaster-disasm",
  "sandblaster-injector",

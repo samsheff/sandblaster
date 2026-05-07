@@ -154,7 +154,7 @@ impl LegacyLog {
         }
 
         if let Some(arch) = &log.header.arch {
-            if let Some(bits) = arch.parse::<u32>().ok() {
+            if let Ok(bits) = arch.parse::<u32>() {
                 log.header.cpu.architecture_bits = Some(bits);
             }
         }

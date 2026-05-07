@@ -4,6 +4,16 @@
 // recovery: sigsetjmp/siglongjmp catch faults in-process.  The JIT page is
 // allocated once with MAP_JIT and reused for every probe.  W^X is toggled via
 // pthread_jit_write_protect_np (Apple Silicon, loaded lazily via dlsym).
+//
+// Sentinel detection uses the ESR (Exception Syndrome Register) from the
+// ucontext machine context rather than the fault PC or siginfo.  On arm64e
+// (all iPhones with A12+), the thread state's __pc field is PAC-authenticated,
+// making direct address comparison unreliable.  The exception state's __esr
+// field is set by the CPU hardware and is never PAC-signed.
+//
+// The sentinel instruction is `brk #0x1337`.  Its ESR has EC=0x3C
+// (BRK A64) and ISS[15:0]=0x1337, making it trivially distinguishable from
+// any fault the probe instruction itself could generate.
 
 use std::io;
 
@@ -25,6 +35,12 @@ impl IosArm64Backend {
     pub fn try_new() -> io::Result<Self> {
         #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
         {
+            // PT_TRACE_ME asks the kernel to treat this process as debuggable,
+            // setting CS_DEBUGGED which may enable MAP_JIT on some iOS versions
+            // without the restricted dynamic-codesigning entitlement.
+            // With a debugger already attached (Xcode) this is a no-op.
+            let _ = unsafe { libc::ptrace(libc::PT_TRACE_ME, 0, std::ptr::null_mut(), 0) };
+
             let page = unsafe {
                 libc::mmap(
                     std::ptr::null_mut(),
@@ -36,11 +52,13 @@ impl IosArm64Backend {
                 )
             };
             if page == libc::MAP_FAILED {
+                let err = io::Error::last_os_error();
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     format!(
-                        "MAP_JIT failed ({}); ensure dynamic-codesigning entitlement is present",
-                        io::Error::last_os_error()
+                        "MAP_JIT failed (errno {}): run via Xcode with debugger attached, \
+                         use a jailbroken device, or obtain the dynamic-codesigning entitlement",
+                        err.raw_os_error().unwrap_or(-1)
                     ),
                 ));
             }
@@ -77,19 +95,25 @@ impl ExecutionBackend for IosArm64Backend {
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
 const PAGE_SIZE: usize = 4096;
 
-// MAP_JIT on Darwin — not exposed by libc for iOS, but the constant is stable.
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
 const MAP_JIT: libc::c_int = 0x800;
 
+// Sentinel: `brk #0x1337` = 0xD422_66E0 (little-endian bytes below).
+//
+// ESR for brk #0x1337:
+//   EC  [31:26] = 0x3C  (BRK instruction, AArch64 state)
+//   IL  [25]    = 1     (32-bit instruction)
+//   ISS [15:0]  = 0x1337 (the BRK immediate)
+//
+// We check EC==0x3C and ISS==0x1337 in the signal handler.  This identifies
+// our sentinel without relying on fault PC or any PAC-sensitive value.
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
-const BRK_ZERO: [u8; 4] = [0x00, 0x00, 0x20, 0xd4]; // brk #0
+const BRK_SENTINEL: [u8; 4] = [0xe0, 0x66, 0x22, 0xd4]; // brk #0x1337
+
+#[cfg(all(target_os = "ios", target_arch = "aarch64"))]
+const SENTINEL_BRK_IMM: u32 = 0x1337;
 
 // ─── sigjmp_buf / sigsetjmp / siglongjmp ────────────────────────────────────
-//
-// libc for aarch64-apple-ios does not expose sigjmp_buf, sigsetjmp, or
-// siglongjmp.  We declare them directly.  The buffer is sized conservatively
-// at 512 bytes (arm64-apple sigjmp_buf is ~200 bytes in practice) with 16-byte
-// alignment to satisfy any platform ABI requirement.
 
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
 #[repr(C, align(16))]
@@ -97,8 +121,6 @@ struct SigJmpBuf([u8; 512]);
 
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
 extern "C" {
-    // Returns 0 on first call; returns `val` when resumed via siglongjmp.
-    // savemask != 0 saves and restores the signal mask.
     fn sigsetjmp(env: *mut SigJmpBuf, savemask: libc::c_int) -> libc::c_int;
     fn siglongjmp(env: *mut SigJmpBuf, val: libc::c_int) -> !;
 }
@@ -109,7 +131,6 @@ extern "C" {
 struct JitPage(*mut libc::c_void);
 
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
-// SAFETY: The JIT page raw pointer is owned exclusively by IosArm64Backend.
 unsafe impl Send for JitPage {}
 
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
@@ -143,8 +164,6 @@ static PROBE_SI_CODE: AtomicI32 = AtomicI32::new(0);
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
 static PROBE_FAULT_ADDR: AtomicU32 = AtomicU32::new(u32::MAX);
 
-// SAFETY: Access is serialized by PROBE_LOCK — exactly one probe runs at a time.
-// The signal handler runs on the same thread as the probe (POSIX signal delivery).
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
 static mut RECOVERY_BUF: SigJmpBuf = SigJmpBuf([0u8; 512]);
 
@@ -157,16 +176,69 @@ const PROBE_SIGNALS: [libc::c_int; 5] = [
     libc::SIGTRAP,
 ];
 
+// ─── ESR sentinel detection ───────────────────────────────────────────────────
+//
+// Darwin ARM64 ucontext_t memory layout (from Apple open-source headers):
+//
+//   ucontext_t:
+//     +  0  uc_onstack    i32   (4 bytes)
+//     +  4  uc_sigmask    u32   (4 bytes)
+//     +  8  uc_stack      {*void(8) + size_t(8) + int(4) + pad(4)} = 24 bytes
+//     + 32  uc_link       *ucontext_t   (8 bytes)
+//     + 40  uc_mcsize     usize         (8 bytes)
+//     + 48  uc_mcontext   *mcontext     (8 bytes) ← pointer we need
+//
+//   __darwin_mcontext64:
+//     +  0  __es  __darwin_arm_exception_state64:
+//              +0  __far  u64   (fault address — may be 0 for non-memory faults)
+//              +8  __esr  u32   (exception syndrome register ← we read this)
+//              +12 __exception u32
+//     + 16  __ss  __darwin_arm_thread_state64  (272 bytes; __pc is at +256, PAC-signed on arm64e)
+//
+// We read __esr at mcontext+8.  The exception state is not PAC-protected
+// so this works on arm64e devices running arm64 binaries.
+
+#[cfg(all(target_os = "ios", target_arch = "aarch64"))]
+unsafe fn sentinel_fired_via_esr(ctx: *mut libc::c_void) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+
+    let uc = ctx as *const u8;
+
+    // Read the raw value at the uc_mcontext slot (offset 48).
+    // On arm64e, this pointer may carry PAC bits in the upper bytes.
+    // We validate it looks like a user-space address before dereferencing.
+    let mcontext_raw: u64 = unsafe { *(uc.add(48) as *const u64) };
+
+    // iOS user-space addresses sit below 2^47 (~128 TiB).
+    // If the upper bits are set the pointer is PAC-signed or garbage.
+    if mcontext_raw == 0 || mcontext_raw >= (1u64 << 47) {
+        return false;
+    }
+
+    let mcontext = mcontext_raw as *const u8;
+
+    // Read __esr at mcontext+8.
+    let esr: u32 = unsafe { *(mcontext.add(8) as *const u32) };
+
+    // EC (bits [31:26]) == 0x3C → BRK instruction in AArch64 state
+    // ISS[15:0]          == 0x1337 → our distinctive sentinel immediate
+    let ec = (esr >> 26) & 0x3F;
+    let iss = esr & 0xFFFF;
+
+    ec == 0x3C && iss == SENTINEL_BRK_IMM
+}
+
 // ─── Signal handler ───────────────────────────────────────────────────────────
 
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
 unsafe extern "C" fn probe_signal_handler(
     signum: libc::c_int,
     info: *mut libc::siginfo_t,
-    _ctx: *mut libc::c_void,
+    ctx: *mut libc::c_void,
 ) {
     if !PROBE_ACTIVE.load(Ordering::Acquire) {
-        // Signal arrived outside a probe — restore default and re-raise.
         unsafe {
             libc::signal(signum, libc::SIG_DFL);
             libc::raise(signum);
@@ -174,20 +246,43 @@ unsafe extern "C" fn probe_signal_handler(
         return;
     }
 
-    PROBE_SIGNUM.store(signum, Ordering::Relaxed);
+    // Check the ESR to see if this SIGTRAP is our sentinel `brk #0x1337`.
+    // This is reliable on arm64e because ESR lives in the exception state,
+    // which is not PAC-protected, unlike the thread state's __pc.
+    if signum == libc::SIGTRAP && unsafe { sentinel_fired_via_esr(ctx) } {
+        // Probe instruction executed cleanly; report as signum=0 (no fault).
+        PROBE_SIGNUM.store(0, Ordering::Relaxed);
+        PROBE_SI_CODE.store(0, Ordering::Relaxed);
+        PROBE_FAULT_ADDR.store(u32::MAX, Ordering::Relaxed);
+    } else {
+        // Real fault from the probe instruction itself.
+        PROBE_SIGNUM.store(signum, Ordering::Relaxed);
 
-    if !info.is_null() {
-        unsafe {
-            let si = &*info;
+        if !info.is_null() {
+            let si = unsafe { &*info };
             PROBE_SI_CODE.store(si.si_code, Ordering::Relaxed);
-            // Truncate 64-bit fault address to 32 bits to match BackendObservation.
             PROBE_FAULT_ADDR.store(si.si_addr as usize as u32, Ordering::Relaxed);
+        } else {
+            // Debugger stripped siginfo; record si_code=0 and fault_addr from
+            // the exception state's __far if available.
+            PROBE_SI_CODE.store(0, Ordering::Relaxed);
+
+            // Try to read __far (fault address) from mcontext+0 for memory faults.
+            let far = if !ctx.is_null() {
+                let mcontext_raw: u64 = unsafe { *(ctx as *const u8).add(48).cast::<u64>() };
+                if mcontext_raw != 0 && mcontext_raw < (1u64 << 47) {
+                    let far_val: u64 = unsafe { *(mcontext_raw as *const u64) };
+                    far_val as u32
+                } else {
+                    u32::MAX
+                }
+            } else {
+                u32::MAX
+            };
+            PROBE_FAULT_ADDR.store(far, Ordering::Relaxed);
         }
     }
 
-    // Jump back to the sigsetjmp point inside execute_probe.
-    // The RECOVERY_BUF frame is still live — only frames between the signal
-    // delivery site and sigsetjmp are abandoned (no Rust destructors there).
     unsafe {
         siglongjmp(&raw mut RECOVERY_BUF, 1);
     }
@@ -237,13 +332,11 @@ fn jit_write_protect(protect: bool) {
     });
 
     if let Some(f) = *f {
-        // 0 = write mode, 1 = execute mode
         unsafe { f(libc::c_int::from(protect)) };
     }
-    // If not available (older device/OS), the mmap flags already cover it.
 }
 
-// ─── I-cache flush (same as Android backend) ─────────────────────────────────
+// ─── I-cache flush ────────────────────────────────────────────────────────────
 
 #[cfg(all(target_os = "ios", target_arch = "aarch64"))]
 unsafe fn flush_icache(start: *mut u8, len: usize) {
@@ -284,10 +377,7 @@ fn execute_probe(
     jit_page: *mut libc::c_void,
     instruction: &InstructionBytes,
 ) -> Result<BackendObservation, String> {
-    // Serialize probes: global signal state is not re-entrant.
-    let _guard = probe_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let _guard = probe_lock().lock().unwrap_or_else(|p| p.into_inner());
 
     let mut old_actions: [libc::sigaction; 5] = unsafe { std::mem::zeroed() };
     if !install_probe_handlers(&mut old_actions) {
@@ -302,29 +392,21 @@ fn execute_probe(
     PROBE_FAULT_ADDR.store(u32::MAX, Ordering::Relaxed);
     PROBE_ACTIVE.store(true, Ordering::Release);
 
-    // sigsetjmp saves CPU state and signal mask (savemask=1).
-    // Returns 0 on first call; returns 1 when resumed by siglongjmp.
-    //
-    // When the probe causes a signal:
-    //   probe_signal_handler → siglongjmp → sigsetjmp returns 1
-    // _guard and old_actions live in *this* frame, which survives the jump;
-    // only frames between signal delivery and sigsetjmp are abandoned.
     let setjmp_ret = unsafe { sigsetjmp(&raw mut RECOVERY_BUF, 1) };
 
     if setjmp_ret == 0 {
-        jit_write_protect(false); // enable write
+        jit_write_protect(false);
         unsafe {
             std::ptr::copy_nonoverlapping(instruction.bytes().as_ptr(), jit_page.cast::<u8>(), 4);
-            std::ptr::copy_nonoverlapping(BRK_ZERO.as_ptr(), jit_page.cast::<u8>().add(4), 4);
+            std::ptr::copy_nonoverlapping(BRK_SENTINEL.as_ptr(), jit_page.cast::<u8>().add(4), 4);
             flush_icache(jit_page.cast::<u8>(), 8);
         }
-        jit_write_protect(true); // enable exec
+        jit_write_protect(true);
 
-        // Execute. BRK or a fault fires → siglongjmp → setjmp_ret = 1 path.
         let entry: unsafe extern "C" fn() =
             unsafe { std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn()>(jit_page) };
         unsafe { entry() };
-        // Unreachable: BRK always fires after any valid instruction.
+        // Unreachable: the sentinel brk always fires after any non-faulting instruction.
     }
 
     PROBE_ACTIVE.store(false, Ordering::Release);

@@ -44,8 +44,7 @@ impl BruteStrategy {
     pub fn with_range(depth: usize, range: SearchRange) -> Self {
         let depth = depth
             .max(range.start.specified_len())
-            .min(RAW_REPORT_INSN_BYTES)
-            .max(1);
+            .clamp(1, RAW_REPORT_INSN_BYTES);
         Self {
             current: *range.start.bytes(),
             end: range.end,

@@ -97,11 +97,64 @@ impl DisasmBackend for Arm64FixedDisassembler {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Arm64HeuristicDisassembler;
+
+impl DisasmBackend for Arm64HeuristicDisassembler {
+    fn name(&self) -> &'static str {
+        "arm64-heuristic"
+    }
+
+    fn decode_first(&self, instruction: &InstructionBytes) -> Result<DecodeOutput, DecodeError> {
+        if instruction.specified_len() < 4 {
+            return Ok(DecodeOutput {
+                mnemonic: "(short)".to_string(),
+                operands: String::new(),
+                length: 0,
+                known: false,
+            });
+        }
+
+        let raw = &instruction.bytes()[..4];
+        let word = u32::from_le_bytes(raw.try_into().expect("slice has four bytes"));
+        let known = arm64_word_is_likely_allocated(word);
+        Ok(DecodeOutput {
+            mnemonic: if known { "aarch64" } else { "(unk)" }.to_string(),
+            operands: String::new(),
+            length: if known { 4 } else { 0 },
+            known,
+        })
+    }
+}
+
+fn arm64_word_is_likely_allocated(word: u32) -> bool {
+    if word == 0 {
+        return false;
+    }
+
+    // UDF occupies the permanently undefined encoding space.
+    if (word & 0xffff_0000) == 0 {
+        return false;
+    }
+
+    // BRK/HLT/HLT-like exception encodings are architecturally allocated.
+    if (word & 0xffe0_001f) == 0xd420_0000 {
+        return true;
+    }
+
+    // This is deliberately conservative without pulling a full AArch64 decoder
+    // into the mobile staticlib: top-level op0 classes 100x/101x are the broad
+    // data-processing/load-store/branch regions where useful probes live.
+    matches!((word >> 25) & 0x0f, 0b0100..=0b1011)
+}
+
 #[cfg(test)]
 mod tests {
     use sandblaster_core::InstructionBytes;
 
-    use crate::backend::{Arm64FixedDisassembler, DisasmBackend, IcedX86Disassembler};
+    use crate::backend::{
+        Arm64FixedDisassembler, Arm64HeuristicDisassembler, DisasmBackend, IcedX86Disassembler,
+    };
 
     #[test]
     fn iced_decodes_known_instruction_length() {
@@ -126,6 +179,26 @@ mod tests {
     #[test]
     fn arm64_fixed_width_reports_four_byte_instructions() {
         let decoded = Arm64FixedDisassembler
+            .decode_first(&InstructionBytes::from_slice(&[0x1f, 0x20, 0x03, 0xd5]))
+            .expect("decode should succeed");
+
+        assert!(decoded.known);
+        assert_eq!(decoded.length, 4);
+    }
+
+    #[test]
+    fn arm64_heuristic_marks_permanent_undefined_as_unknown() {
+        let decoded = Arm64HeuristicDisassembler
+            .decode_first(&InstructionBytes::from_slice(&[0x00, 0x00, 0x00, 0x00]))
+            .expect("decode should succeed");
+
+        assert!(!decoded.known);
+        assert_eq!(decoded.length, 0);
+    }
+
+    #[test]
+    fn arm64_heuristic_marks_nop_as_known() {
+        let decoded = Arm64HeuristicDisassembler
             .decode_first(&InstructionBytes::from_slice(&[0x1f, 0x20, 0x03, 0xd5]))
             .expect("decode should succeed");
 
