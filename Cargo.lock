@@ -37,6 +37,16 @@ name = "sandblaster-core"
 version = "0.1.0"
 
 [[package]]
+name = "sandblaster-corpusgen"
+version = "0.1.0"
+dependencies = [
+ "sandblaster-core",
+ "sandblaster-disasm",
+ "sandblaster-injector",
+ "sandblaster-search",
+]
+
+[[package]]
 name = "sandblaster-disasm"
 version = "0.1.0"
 dependencies = [
@@ -60,6 +70,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "sandblaster-core",
+ "sandblaster-corpusgen",
  "sandblaster-disasm",
  "sandblaster-injector",
  "sandblaster-search",

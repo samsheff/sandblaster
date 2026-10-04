@@ -173,6 +173,38 @@ The iOS app uses the same target-aware packet plumbing as the other runners and
 exports `SB1` logs for `ios-arm64`. Start with dry-run or narrow ARM64 ranges
 before broader generated-code sweeps.
 
+The app ships three ARM64 execution modes:
+
+- **ARM64 (native, mode 0)** — writes each candidate into a `MAP_JIT` page at
+  runtime. Only works if the OS actually grants `MAP_JIT` to the process
+  (the restricted dynamic-codesigning entitlement, or a debugger attached).
+- **STATIC (mode 3)** — no runtime code generation at all. The entire
+  candidate corpus is precomputed on the host at build time and baked into
+  the signed binary as ordinary compiled functions (`crates/corpusgen`,
+  invoked from `crates/mobile_ffi/build.rs`). Every byte this mode ever
+  executes was present in the binary when it was signed, so it needs no
+  `MAP_JIT`, no entitlement, and no debugger — but it only covers whatever
+  range was baked in. Control that range with environment variables before
+  running `scripts/ios-build.sh`:
+
+  ```sh
+  SANDBLASTER_IOS_CORPUS_MODE=tunnel \
+  SANDBLASTER_IOS_CORPUS_START=00000000 \
+  SANDBLASTER_IOS_CORPUS_END=ffffffff \
+  SANDBLASTER_IOS_CORPUS_COUNT=65536 \
+  scripts/ios-build.sh
+  ```
+
+  The on-device start/end/strategy picker must stay within whatever range
+  was baked in, or candidates outside it report a "not present in baked
+  static corpus" error instead of a result. `tunnel` mode (the default)
+  needs to run the generator on Apple Silicon macOS, since it drives the
+  search with real ARM64 execution feedback; `brute`/`random` don't need
+  that and build anywhere.
+- **DRY-RUN (mode 1)** — synthetic observations, no execution at all.
+- **SANDBOX (mode 2)** — probes `sandbox_check` policy results instead of
+  executing instructions.
+
 Import an exported iOS `SB1` log into the host-side sifter pipeline:
 
 ```sh

@@ -9,9 +9,19 @@ use sandblaster_core::{parse_hex_instruction, InstructionBytes, TargetSpec};
 use sandblaster_disasm::Arm64HeuristicDisassembler;
 use sandblaster_injector::{
     BackendObservation, ExecutionBackend, InjectorConfig, InjectorEngine, InjectorEvent,
-    IosArm64Backend, VersionedPacket,
+    IosArm64Backend, IosStaticCorpusBackend, VersionedPacket,
 };
 use sandblaster_search::SearchMode;
+
+// The iOS static instruction corpus, generated at build time by
+// `build.rs` (via `sandblaster-corpusgen`) from real ARM64 execution
+// feedback. Embedding it here (rather than linking a separate archive) means
+// it's automatically part of whatever binary this crate ends up in -- no
+// extra Xcode link step needed. Defines the `SB_PROBE_COUNT`/`SB_PROBE_BYTES`/
+// `SB_PROBE_TABLE` symbols that `IosStaticCorpusBackend` (in
+// `sandblaster-injector`) declares `extern "C"` and looks up at runtime.
+#[cfg(all(target_os = "ios", target_arch = "aarch64"))]
+core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/corpus.s")));
 
 // ─── Dry-run backend (no executable memory needed) ───────────────────────────
 
@@ -38,6 +48,7 @@ impl ExecutionBackend for DryRunBackend {
 enum AnyBackend {
     DryRun(DryRunBackend),
     Native(IosArm64Backend),
+    StaticCorpus(IosStaticCorpusBackend),
 }
 
 impl ExecutionBackend for AnyBackend {
@@ -45,6 +56,7 @@ impl ExecutionBackend for AnyBackend {
         match self {
             Self::DryRun(b) => b.execute(instruction),
             Self::Native(b) => b.execute(instruction),
+            Self::StaticCorpus(b) => b.execute(instruction),
         }
     }
 }
@@ -294,9 +306,22 @@ fn run_sandbox_worker(state_arc: Arc<SharedState>) {
 // ─── ARM64 instruction fuzzer worker ─────────────────────────────────────────
 
 fn run_instruction_worker(state_arc: Arc<SharedState>, scan_config: MobileScanConfig) {
-    let dry_run = scan_config.mode == 1;
-    let backend: AnyBackend = if !dry_run {
-        match IosArm64Backend::try_new() {
+    let backend: AnyBackend = match scan_config.mode {
+        1 => AnyBackend::DryRun(DryRunBackend { fixed_len: Some(4) }),
+        3 => match IosStaticCorpusBackend::try_new() {
+            Ok(b) => AnyBackend::StaticCorpus(b),
+            Err(e) => {
+                // Unlike the JIT backend, the static-corpus backend never
+                // fails for entitlement reasons -- a failure here means the
+                // corpus wasn't baked in (or is empty), which is worth
+                // surfacing rather than silently masking with dry-run.
+                let msg = format!("static-corpus backend unavailable: {e}");
+                set_error(&state_arc, msg);
+                state_arc.done.store(true, Ordering::Release);
+                return;
+            }
+        },
+        _ => match IosArm64Backend::try_new() {
             Ok(b) => AnyBackend::Native(b),
             Err(e) => {
                 if scan_config.require_native {
@@ -311,9 +336,7 @@ fn run_instruction_worker(state_arc: Arc<SharedState>, scan_config: MobileScanCo
                 lock(&state_arc.queue).push_back(msg);
                 AnyBackend::DryRun(DryRunBackend { fixed_len: Some(4) })
             }
-        }
-    } else {
-        AnyBackend::DryRun(DryRunBackend { fixed_len: Some(4) })
+        },
     };
 
     let config = InjectorConfig {
@@ -370,6 +393,9 @@ fn run_instruction_worker(state_arc: Arc<SharedState>, scan_config: MobileScanCo
 ///   0 = ARM64 native instruction fuzzing (uses MAP_JIT; fails if unavailable)
 ///   1 = ARM64 dry-run (synthetic observations, no JIT required)
 ///   2 = sandbox_check policy fuzzing (probes known sandbox operations)
+///   3 = ARM64 static-corpus replay (pre-baked at build time; no MAP_JIT,
+///       no dynamic-codesigning entitlement, and no debugger needed -- but
+///       only covers whatever range was baked in via SANDBLASTER_IOS_CORPUS_*)
 ///
 /// Returns 0 on success, -1 if a scan is already running.
 ///

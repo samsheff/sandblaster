@@ -1,6 +1,8 @@
 mod android_arm64;
+pub mod arm64_fault;
 mod engine;
 mod ios_arm64;
+mod ios_static_corpus;
 mod linux_x86;
 mod macos_arm64;
 mod packet;
@@ -18,6 +20,7 @@ use sandblaster_search::SearchMode;
 pub use android_arm64::AndroidArm64Backend;
 pub use engine::{ExecutionBackend, InjectorEngine, InjectorEvent};
 pub use ios_arm64::IosArm64Backend;
+pub use ios_static_corpus::IosStaticCorpusBackend;
 pub use linux_x86::{apply_cpu_affinity, LinuxX86Backend};
 pub use macos_arm64::MacosArm64Backend;
 pub use packet::{RawInjectorPacket, TextReport, VersionedPacket, VERSIONED_PACKET_PREFIX};

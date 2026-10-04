@@ -1,18 +1,15 @@
 [package]
-name = "sandblaster-mobile-ffi"
+name = "sandblaster-corpusgen"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-
-[lib]
-crate-type = ["staticlib"]
 
 [dependencies]
 sandblaster-core = { path = "../core" }
 sandblaster-disasm = { path = "../disasm" }
 sandblaster-injector = { path = "../injector" }
 sandblaster-search = { path = "../search" }
-libc = "0.2"
 
-[build-dependencies]
-sandblaster-corpusgen = { path = "../corpusgen" }
+[lib]
+name = "sandblaster_corpusgen"
+path = "src/lib.rs"
