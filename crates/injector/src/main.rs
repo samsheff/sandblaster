@@ -4,11 +4,11 @@ use std::io::{self, Read, Write};
 use std::process::{Command, ExitCode, Stdio};
 
 use sandblaster_core::{Architecture, Platform};
-use sandblaster_disasm::{Arm64FixedDisassembler, IcedX86Disassembler};
+use sandblaster_disasm::{Arm64FixedDisassembler, Arm64HeuristicDisassembler, IcedX86Disassembler};
 use sandblaster_injector::{
     apply_cpu_affinity, split_search_range, AndroidArm64Backend, BackendObservation,
-    ExecutionBackend, InjectorConfig, InjectorEngine, InjectorEvent, LinuxX86Backend, OutputMode,
-    TextReport, VersionedPacket,
+    ExecutionBackend, InjectorConfig, InjectorEngine, InjectorEvent, LinuxX86Backend,
+    MacosArm64Backend, OutputMode, TextReport, VersionedPacket,
 };
 use sandblaster_search::{SearchMode, SearchRange};
 
@@ -78,6 +78,16 @@ fn run_selected_target(config: &InjectorConfig) -> ExitCode {
                 "ios-arm64 native execution is provided by the iOS app/agent, not this CLI binary"
             );
             ExitCode::from(2)
+        }
+        (Platform::Macos, Architecture::Arm64) => {
+            let backend = match MacosArm64Backend::from_config(config) {
+                Ok(backend) => backend,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::from(2);
+                }
+            };
+            run_backend(Arm64HeuristicDisassembler, backend, config)
         }
         _ => {
             eprintln!("unsupported target {}", config.target.name());

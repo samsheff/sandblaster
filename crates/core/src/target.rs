@@ -12,6 +12,7 @@ pub enum Platform {
     Linux,
     Android,
     Ios,
+    Macos,
     Unknown,
 }
 
@@ -64,11 +65,21 @@ impl TargetSpec {
         }
     }
 
+    pub fn macos_arm64() -> Self {
+        Self {
+            architecture: Architecture::Arm64,
+            platform: Platform::Macos,
+            max_instruction_len: 4,
+            fixed_instruction_len: Some(4),
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match (self.platform, self.architecture) {
             (Platform::Linux, Architecture::X86_64) => "linux-x86_64",
             (Platform::Android, Architecture::Arm64) => "android-arm64",
             (Platform::Ios, Architecture::Arm64) => "ios-arm64",
+            (Platform::Macos, Architecture::Arm64) => "macos-arm64",
             (_, Architecture::X86_64) => "x86_64",
             (_, Architecture::Arm64) => "arm64",
         }
@@ -100,6 +111,7 @@ impl fmt::Display for Platform {
             Self::Linux => "linux",
             Self::Android => "android",
             Self::Ios => "ios",
+            Self::Macos => "macos",
             Self::Unknown => "unknown",
         })
     }
@@ -113,6 +125,9 @@ impl FromStr for TargetSpec {
             "linux-x86_64" | "x86_64-linux" => Ok(Self::linux_x86_64()),
             "android-arm64" | "android-aarch64" => Ok(Self::android_arm64()),
             "ios-arm64" | "ios-aarch64" => Ok(Self::ios_arm64()),
+            "macos-arm64" | "macos-aarch64" | "darwin-arm64" | "darwin-aarch64" => {
+                Ok(Self::macos_arm64())
+            }
             "host" => Ok(Self::host()),
             _ => Err(format!("unknown target '{value}'")),
         }
@@ -134,6 +149,8 @@ fn host_platform() -> Platform {
         Platform::Android
     } else if cfg!(target_os = "ios") {
         Platform::Ios
+    } else if cfg!(target_os = "macos") {
+        Platform::Macos
     } else {
         Platform::Unknown
     }
@@ -152,5 +169,15 @@ mod tests {
 
         let ios: TargetSpec = "ios-arm64".parse().expect("target should parse");
         assert_eq!(ios.name(), "ios-arm64");
+
+        let macos: TargetSpec = "darwin-aarch64".parse().expect("target should parse");
+        assert_eq!(macos, TargetSpec::macos_arm64());
+        assert_eq!(macos.name(), "macos-arm64");
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn apple_silicon_host_is_macos_arm64() {
+        assert_eq!(TargetSpec::host(), TargetSpec::macos_arm64());
     }
 }

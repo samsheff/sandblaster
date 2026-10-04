@@ -116,6 +116,7 @@ impl VersionedPacket {
             ("linux", "x86_64") => TargetSpec::linux_x86_64(),
             ("android", "arm64") => TargetSpec::android_arm64(),
             ("ios", "arm64") => TargetSpec::ios_arm64(),
+            ("macos", "arm64") => TargetSpec::macos_arm64(),
             _ => {
                 return Err(format!(
                     "unsupported packet target {}/{}",
@@ -212,5 +213,27 @@ mod tests {
         assert_eq!(parsed.result.disasm, result.disasm);
         assert_eq!(parsed.result.raw_payload_hex(), result.raw_payload_hex());
         assert_eq!(parsed.result.length, result.length);
+    }
+
+    #[test]
+    fn versioned_packet_round_trips_macos_arm64_target() {
+        let result = ExecutionResult {
+            disasm: DisasmResult {
+                length: 4,
+                known: true,
+            },
+            instruction: InstructionBytes::from_slice(&[0x1f, 0x20, 0x03, 0xd5]),
+            valid: 1,
+            length: 4,
+            signum: 0,
+            si_code: 0,
+            fault_addr: u32::MAX,
+        };
+        let line =
+            VersionedPacket::from_execution_result(TargetSpec::macos_arm64(), &result).to_line();
+        let parsed = VersionedPacket::parse_line(&line).expect("packet should parse");
+
+        assert_eq!(parsed.target, TargetSpec::macos_arm64());
+        assert_eq!(parsed.result.raw_payload_hex(), result.raw_payload_hex());
     }
 }

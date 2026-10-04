@@ -2,6 +2,7 @@ mod android_arm64;
 mod engine;
 mod ios_arm64;
 mod linux_x86;
+mod macos_arm64;
 mod packet;
 mod policy;
 mod range;
@@ -18,6 +19,7 @@ pub use android_arm64::AndroidArm64Backend;
 pub use engine::{ExecutionBackend, InjectorEngine, InjectorEvent};
 pub use ios_arm64::IosArm64Backend;
 pub use linux_x86::{apply_cpu_affinity, LinuxX86Backend};
+pub use macos_arm64::MacosArm64Backend;
 pub use packet::{RawInjectorPacket, TextReport, VersionedPacket, VERSIONED_PACKET_PREFIX};
 pub use policy::{default_opcode_blacklist, default_prefix_blacklist, PrefixPolicy};
 pub use range::split_search_range;
@@ -209,7 +211,7 @@ impl InjectorConfig {
 \t[-X blacklist] ...... blacklist the specified instruction\n\
 \t[-j jobs] ........... number of simultaneous jobs to run\n\
 \t[-l range_bytes] .... number of base instruction bytes in each sub range\n\
-\t[--target target] ... linux-x86_64, android-arm64, ios-arm64, or host\n\
+\t[--target target] ... linux-x86_64, android-arm64, ios-arm64, macos-arm64, or host\n\
 \t[--dry-run] ......... generate deterministic synthetic observations\n"
     }
 }

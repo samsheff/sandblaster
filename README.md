@@ -5,13 +5,14 @@
 Sandblaster is a multiplatform processor fuzzer for discovering unusual
 instruction behavior on real hardware. It generates, executes, disassembles,
 and records processor test cases through a Rust workspace with native runners
-for Linux/x86_64, Android/ARM64, and a signed iOS/ARM64 app agent.
+for Linux/x86_64, Android/ARM64, macOS/ARM64, and a signed iOS/ARM64 app agent.
 
 The workspace includes:
 
 - target-aware instruction generation, execution, packet, and summary crates
 - Linux/x86_64 generated-code execution for real x86 hosts
 - Android/ARM64 generated-code execution for on-device `adb shell` runs
+- macOS/ARM64 generated-code execution for Apple Silicon hosts
 - iOS/ARM64 in-process execution through `mobile/ios-agent/SandblasterApp`
 - `SB1` line-oriented result packets with platform and architecture metadata
 - an `iced-x86` disassembler backend for x86 result classification
@@ -179,7 +180,41 @@ cargo run -p sandblaster-cli --bin sifter -- \
   --input path/to/logs.txt --unk --dis --len --sync --no-ui
 ```
 
-## macOS and Docker
+## macOS ARM64
+
+On an Apple Silicon Mac, use the native macOS ARM64 runner:
+
+```sh
+scripts/macos-arm64.sh check
+scripts/macos-arm64.sh build
+scripts/macos-arm64.sh test
+```
+
+Validate the ARM64 frontend path without executing generated instructions:
+
+```sh
+scripts/macos-arm64.sh smoke
+```
+
+Run a bounded native probe using the ARM64 `nop` encoding:
+
+```sh
+scripts/macos-arm64.sh exec-smoke
+```
+
+Run the injector or sifter directly by passing frontend arguments through:
+
+```sh
+scripts/macos-arm64.sh injector -T -b -B 4 -i 1f2003d5 -e 1f2003d6
+scripts/macos-arm64.sh sifter --no-ui --unk --sync --save
+```
+
+The macOS backend is a native Apple Silicon target, not Docker emulation. It
+uses fixed-width ARM64 candidates and isolates generated-code probes in child
+processes so crashes and traps are reported as `SB1` records for
+`macos-arm64`.
+
+## Docker x86_64 on macOS
 
 The low-level x86 injector is written for `linux + x86_64`. On Apple Silicon
 macOS, use Docker Desktop's `linux/amd64` emulation to build and smoke-test it
