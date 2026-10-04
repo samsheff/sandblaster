@@ -52,6 +52,20 @@ fn execute_in_child(instruction: &InstructionBytes) -> Result<BackendObservation
 
     if pid == 0 {
         unsafe {
+            // ponytail: bionic's debuggerd_init() installs handlers for these
+            // signals that fork crash_dump64 + write a tombstone on every
+            // fault (~60ms each). Reset to default so the kernel just kills
+            // the child instead; that's most of the per-instruction cost.
+            for sig in [
+                libc::SIGSEGV,
+                libc::SIGBUS,
+                libc::SIGILL,
+                libc::SIGFPE,
+                libc::SIGTRAP,
+                libc::SIGABRT,
+            ] {
+                libc::signal(sig, libc::SIG_DFL);
+            }
             libc::alarm(1);
         }
         child_execute_probe(instruction);
