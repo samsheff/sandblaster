@@ -2,6 +2,7 @@
 members = [
     "crates/cli",
     "crates/core",
+    "crates/corpusgen",
     "crates/disasm",
     "crates/injector",
     "crates/mobile_ffi",

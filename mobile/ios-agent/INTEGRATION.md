@@ -101,3 +101,33 @@ The host-side `sifter` parser already understands `ios arm64` packet metadata.
 - Add an Xcode project under `mobile/ios-agent`.
 - Add a host import command for app-exported `SB1` logs.
 - Add native iOS execution only after the feasibility probe succeeds.
+
+## Static Corpus (No Entitlement Needed)
+
+The `MAP_JIT`-based execution phases above only work when the OS actually
+grants the process executable, writable memory — which depends on the
+restricted dynamic-codesigning entitlement being approved, or a debugger
+being attached. When neither is available, use the static-corpus path
+instead (`IosStaticCorpusBackend`, mode 3 in `mobile_ffi`):
+
+- `crates/corpusgen` precomputes the candidate corpus on the host at build
+  time, using the real `InjectorEngine` (with `MacosArm64Backend` driving
+  real ARM64 execution feedback on Apple Silicon macOS, so `Tunnel` mode
+  branches exactly as it would on-device).
+- `crates/mobile_ffi/build.rs` writes the generated candidates as ARM64
+  assembly; `crates/mobile_ffi/src/lib.rs` embeds it directly into the crate
+  via `core::arch::global_asm!`. Each candidate becomes an ordinary compiled
+  function (its bytes plus the shared `brk #0x1337` sentinel) — there is no
+  separate archive to link and no extra Xcode step.
+- At runtime, `IosStaticCorpusBackend` looks up each candidate in a table
+  built from the linked `SB_PROBE_*` symbols and calls the matching
+  pre-baked function directly. No `mmap`, no `MAP_JIT`, no
+  `pthread_jit_write_protect_np`.
+- The corpus range/mode is controlled by `SANDBLASTER_IOS_CORPUS_*`
+  environment variables at build time (see `README.md`); the on-device
+  start/end/strategy selection must stay within whatever range was baked
+  in, or candidates outside it report a clear "not present" error.
+
+This is a stricter signing posture than the JIT phases, not a weaker one:
+every instruction this backend ever executes was present in the binary when
+it was code-signed, exactly like any other compiled function in the app.

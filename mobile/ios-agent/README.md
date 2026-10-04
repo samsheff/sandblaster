@@ -19,3 +19,9 @@ The app target should:
 The first iOS implementation should keep the host transport simple: write packet
 logs into the app container and retrieve them through Xcode Devices or a small
 debug-only share/export action.
+
+When no executable-memory/JIT entitlement is available at all, use the
+static-corpus mode instead of the JIT feasibility test above: the candidate
+corpus is precomputed on the host at build time and baked into the signed
+binary as ordinary compiled functions, so nothing is ever written to
+executable memory at runtime. See `INTEGRATION.md`'s "Static Corpus" section.

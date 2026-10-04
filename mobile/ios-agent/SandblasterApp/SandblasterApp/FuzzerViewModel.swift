@@ -5,6 +5,7 @@ enum FuzzerMode: Int, CaseIterable, Identifiable {
     case arm64Native = 0
     case arm64DryRun = 1
     case sandbox     = 2
+    case arm64Static = 3
 
     var id: Int { rawValue }
     var label: String {
@@ -12,6 +13,7 @@ enum FuzzerMode: Int, CaseIterable, Identifiable {
         case .arm64Native: return "ARM64"
         case .arm64DryRun: return "DRY-RUN"
         case .sandbox:     return "SANDBOX"
+        case .arm64Static: return "STATIC"
         }
     }
     var shortName: String {
@@ -19,6 +21,7 @@ enum FuzzerMode: Int, CaseIterable, Identifiable {
         case .arm64Native: return "ARM64-NATIVE"
         case .arm64DryRun: return "ARM64-DRYRUN"
         case .sandbox:     return "SANDBOX"
+        case .arm64Static: return "ARM64-STATIC"
         }
     }
 }
